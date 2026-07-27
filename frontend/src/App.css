@@ -1,0 +1,25 @@
+/* ── CRM — styles complémentaires (Quiet Board) ── */
+
+/* Scroll horizontal du board kanban */
+.kanban-hscroll {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+}
+.kanban-hscroll::-webkit-scrollbar { height: 4px; }
+.kanban-hscroll::-webkit-scrollbar-track { background: transparent; }
+.kanban-hscroll::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 999px;
+}
+
+/* Scroll vertical des colonnes */
+.kanban-col-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border) / 0.45) transparent;
+}
+.kanban-col-scroll::-webkit-scrollbar { width: 3px; }
+.kanban-col-scroll::-webkit-scrollbar-track { background: transparent; }
+.kanban-col-scroll::-webkit-scrollbar-thumb {
+    background: hsl(var(--border) / 0.45);
+    border-radius: 999px;
+}

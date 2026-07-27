@@ -1,0 +1,55 @@
+---
+description: Relia desktop — workspace, mode DEV, rebuild, persistence, DA. Lire AGENTS.md.
+alwaysApply: true
+---
+
+# Relia — nouvelle conversation
+
+## Workspace
+
+- Travailler **uniquement** dans **`crm-desktop`**.
+- **`crmnew-main`** = CRM web sibling — ne pas y coder Relia, ne pas sync aveugle.
+- Produit : **Relia** · Tauri 2 · local-first · UI **française**.
+- Identifiant `local.crm.desktop` — **ne jamais changer** (sinon perte des données).
+
+## Critiques avant toute feature
+
+1. Lire **`AGENTS.md`** à la racine (archi, DA, pièges).
+2. State métier → `crm_state_v1.json` via `diskStorage.js` seulement.
+3. Prefs UI → shim `desktopLocalStorage.js` → `crm_prefs.json`.
+4. **Interdit** : CRM state dans localStorage / prefs. `diskPrefs.js` est mort. `backend/` est mort.
+
+## Mode DEV (pendant les mods)
+
+**Toujours** lancer Relia en dev pour itérer — **pas** l’app dans Applications :
+
+```bash
+cd frontend && yarn desktop
+```
+
+- Hot reload / fenêtre Tauri dev.
+- **Fermer Relia.app** (Applications / Dock) pendant ce temps — sinon tu testes l’ancienne build.
+- `yarn start` seul = navigateur ≠ Relia desktop.
+
+## Installer Applications (quand c’est bon)
+
+Éditer le code **ne met pas à jour** `/Applications/Relia.app`.
+
+```bash
+cd frontend && yarn desktop:build
+rm -rf /Applications/Relia.app
+cp -R src-tauri/target/release/bundle/macos/Relia.app /Applications/Relia.app
+```
+
+Puis **Cmd+Q** et relancer depuis Applications.
+
+## Vocal / Whisper
+
+- Session globale : `VoiceSessionContext` + dock fiche prospect.
+- Calendrier : micro **inline** (`VoiceMicButton`) — pas de 2ᵉ dock.
+- Transcription : Whisper local (`transcribeLocal.js`) — RDV post-Whisper = **toast confirmer**, pas auto-apply.
+- TTL recordings : **90 jours** (`callRecordings.js`).
+
+## DA
+
+Minimaliste Apple / Notion / Stripe. Primary `#007AFF`. Moins de friction, pas de look “IA purple”.

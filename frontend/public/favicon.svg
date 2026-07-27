@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Fond arrondi -->
+  <rect width="32" height="32" rx="8" fill="#6366f1"/>
+  <!-- Lettre C stylisée -->
+  <path d="M21 11.5C19.6 10.6 18 10 16 10C11.6 10 8 13.1 8 17C8 20.9 11.6 24 16 24C18 24 19.6 23.4 21 22.5"
+        stroke="white" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+  <!-- Accent / point -->
+  <circle cx="21.5" cy="17" r="1.5" fill="white" opacity="0.5"/>
+</svg>
