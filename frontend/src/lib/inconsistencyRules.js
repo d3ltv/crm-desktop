@@ -277,10 +277,13 @@ function hasActivityAfter(lead, afterIso) {
     return false;
 }
 
-/** Preuve structurée d'appel / relance (préfixes CallNote / LOG_RELANCE). */
+/** Preuve structurée d'appel / relance (préfixes CallNote / LOG_RELANCE / vocal / lastContact). */
 function hasStrictCallOrRelanceEvidence(lead) {
+    if (lead.lastContact) return true;
+    if (lead.contactedColumnEnteredAt) return true;
     if ((lead.relances || []).length > 0) return true;
     for (const n of lead.notes || []) {
+        if (n?.recordingId) return true; // vocal = appel, même si le texte a changé
         const t = String(n.text || "").trim();
         if (NOTE_NO_ANSWER_RE.test(t) || NOTE_REACHED_RE.test(t) || NOTE_RELANCE_RE.test(t)) return true;
     }

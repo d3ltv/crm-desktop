@@ -10,7 +10,8 @@ import {
 } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
 import { filterLeads } from "@/lib/leadFilter";
-import { setActiveLeadDrag, getActiveLeadDrag } from "@/lib/dndTransfer";
+import { createLeadPointerDrag } from "@/lib/leadPointerDrag";
+import { RELIA_EVENTS, isTypingTarget, consumePendingQuickModeToggle } from "@/lib/reliaShortcuts";
 
 export const KanbanBoard = ({
     workspace,
@@ -224,6 +225,25 @@ export const KanbanBoard = ({
         onQuickModeChange?.(false, 0);
     }, [onCloseLead, onQuickModeChange]);
 
+    // Event depuis WorkspacePage — toggle mode rapide (+ pending si board venait de monter)
+    const quickModeRef = useRef(false);
+    quickModeRef.current = quickMode;
+
+    useEffect(() => {
+        const applyToggle = () => {
+            consumePendingQuickModeToggle();
+            if (quickModeRef.current) stopQuickMode();
+            else startQuickMode();
+        };
+        const onEvent = () => applyToggle();
+        window.addEventListener(RELIA_EVENTS.TOGGLE_QUICK_MODE, onEvent);
+        // Bascule vue → board remount : consommer le flag sans attendre un 2e event
+        if (consumePendingQuickModeToggle()) {
+            startQuickMode();
+        }
+        return () => window.removeEventListener(RELIA_EVENTS.TOGGLE_QUICK_MODE, onEvent);
+    }, [startQuickMode, stopQuickMode]);
+
     // Ouvrir la note sur le lead focusé SANS le déplacer.
     // Le move vers Contacté se fait à l'enregistrement (Cmd+Entrée / Enregistrer).
     // Échap / Passer laisse le lead dans Nouveau.
@@ -256,11 +276,14 @@ export const KanbanBoard = ({
                     e.key === "ArrowRight" || e.key === "ArrowDown" ||
                     e.key === "ArrowUp" || e.key === "ArrowLeft" || e.key === " "
                 ) {
+                    if (e.metaKey || e.ctrlKey || e.altKey) return;
                     e.preventDefault();
                     e.stopPropagation();
                 }
                 return;
             }
+
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
 
             if (
                 e.key === "ArrowRight" || e.key === "ArrowDown" ||
@@ -324,102 +347,81 @@ export const KanbanBoard = ({
         }
     }, [nouveauLeads.length, stopQuickMode, onQuickModeChange]);
 
-    // --- Lead drag handlers ---
-    // Sous WKWebView (Tauri macOS), les types MIME custom (`application/x-lead-id`)
-    // sont souvent absents de dataTransfer.types pendant dragover → drop bloqué.
-    // Flag synchrone (dndTransfer) + text/plain + dragState React.
-    const handleLeadDragStart = useCallback((e, lead) => {
-        e.dataTransfer.setData("application/x-lead-id", lead.id);
-        e.dataTransfer.setData("text/plain", lead.id);
-        e.dataTransfer.effectAllowed = "move";
+    // --- Lead drag (pointeur — fiable sous Tauri/WKWebView) ---
+    const commitLeadMove = useCallback(
+        ({ leadId, fromColumnId, toColumnId, toIndex }) => {
+            if (!leadId || !toColumnId) return;
 
-        // Synchrone : avant le 1er dragover (React n’a pas encore re-rendu)
-        setActiveLeadDrag({ leadId: lead.id, fromColumnId: lead.columnId });
-
-        const el = e.currentTarget;
-        if (el) {
-            const clone = el.cloneNode(true);
-            clone.style.cssText = `
-                position: fixed; top: -9999px; left: -9999px;
-                width: ${el.offsetWidth}px;
-                opacity: 0.85;
-                transform: rotate(2deg) scale(1.03);
-                pointer-events: none;
-                border-radius: 12px;
-                box-shadow: 0 16px 40px -8px rgba(0,0,0,0.25);
-            `;
-            document.body.appendChild(clone);
-            e.dataTransfer.setDragImage(clone, el.offsetWidth / 2, 24);
-            const removeClone = () => {
-                if (clone.parentNode) clone.parentNode.removeChild(clone);
-            };
-            const timer = setTimeout(removeClone, 0);
-            clone._cleanup = () => { clearTimeout(timer); removeClone(); };
-        }
-
-        // Pas de colonne pré-sélectionnée : les cibles s’allument au survol
-        setDragState({
-            leadId: lead.id,
-            fromColumnId: lead.columnId,
-            toColumnId: null,
-            toIndex: null,
-        });
-    }, []);
-
-    const handleLeadDragEnd = useCallback(() => {
-        setActiveLeadDrag(null);
-        setDragState(null);
-    }, []);
-
-    // Called by KanbanColumn when the drag hovers a column + index
-    const handleDragHover = useCallback((columnId, index) => {
-        setDragState((prev) =>
-            prev ? { ...prev, toColumnId: columnId, toIndex: index } : prev,
-        );
-    }, []);
-
-    const handleDropLead = useCallback(
-        (columnId, index) => {
-            const active = dragState?.leadId
-                ? dragState
-                : null;
-            // Fallback synchrone si le state React n’est pas encore à jour
-            const leadId = active?.leadId || getActiveLeadDrag()?.leadId;
-            const fromColumnId = active?.fromColumnId || getActiveLeadDrag()?.fromColumnId;
-            if (!leadId) return;
-
-            if (fromColumnId === columnId) {
-                // Same column → reorder
-                const leads = byColumn[columnId];
+            if (fromColumnId === toColumnId) {
+                const leads = byColumn[toColumnId] || [];
                 const fromIndex = leads.findIndex((l) => l.id === leadId);
-                if (fromIndex === -1 || fromIndex === index) {
-                    setActiveLeadDrag(null);
-                    setDragState(null);
-                    return;
-                }
-                // Adjust toIndex if moving down (splice removes element first)
-                const toIndex = index != null ? index : leads.length - 1;
+                if (fromIndex === -1 || toIndex == null) return;
+                const adjusted = fromIndex < toIndex ? toIndex - 1 : toIndex;
+                if (adjusted === fromIndex || adjusted < 0) return;
                 dispatch({
                     type: "REORDER_LEADS",
                     workspaceId: workspace.id,
-                    columnId,
+                    columnId: toColumnId,
                     fromIndex,
-                    toIndex: fromIndex < toIndex ? toIndex - 1 : toIndex,
+                    toIndex: adjusted,
                 });
-            } else {
-                // Cross-column move with position
-                dispatch({
-                    type: "MOVE_LEAD_ORDERED",
-                    workspaceId: workspace.id,
-                    leadId,
-                    toColumnId: columnId,
-                    toIndex: index,
-                });
+                return;
             }
-            setActiveLeadDrag(null);
-            setDragState(null);
+
+            dispatch({
+                type: "MOVE_LEAD_ORDERED",
+                workspaceId: workspace.id,
+                leadId,
+                toColumnId,
+                toIndex: toIndex != null ? toIndex : null,
+            });
+            try {
+                const fromCol = workspace.columns?.[fromColumnId];
+                const toCol = workspace.columns?.[toColumnId];
+                window.dispatchEvent(new CustomEvent("relia:lead-moved", {
+                    detail: {
+                        workspaceId: workspace.id,
+                        leadId,
+                        fromColumnId,
+                        toColumnId,
+                        fromName: fromCol?.name || "",
+                        toName: toCol?.name || "",
+                    },
+                }));
+            } catch { /* ignore */ }
         },
-        [dragState, byColumn, dispatch, workspace.id],
+        [byColumn, dispatch, workspace.id, workspace.columns],
+    );
+
+    const commitLeadMoveRef = useRef(commitLeadMove);
+    commitLeadMoveRef.current = commitLeadMove;
+
+    const pointerDrag = useMemo(
+        () =>
+            createLeadPointerDrag({
+                setDragState,
+                onCommitMove: (payload) => commitLeadMoveRef.current(payload),
+            }),
+        [],
+    );
+
+    const handleLeadPointerDown = useCallback(
+        (e, lead) => {
+            pointerDrag.didDragRef.current = false;
+            pointerDrag.onLeadPointerDown(e, lead);
+        },
+        [pointerDrag],
+    );
+
+    const handleOpenLead = useCallback(
+        (lead) => {
+            if (pointerDrag.didDragRef.current) {
+                pointerDrag.didDragRef.current = false;
+                return;
+            }
+            onOpenLead?.(lead);
+        },
+        [onOpenLead, pointerDrag],
     );
 
     // --- Column drag handlers ---
@@ -476,7 +478,7 @@ export const KanbanBoard = ({
                         leads={byColumn[cid] || []}
                         workspace={workspace}
                         dragState={dragState}
-                        onOpenLead={onOpenLead}
+                        onOpenLead={handleOpenLead}
                         onAddLead={() => onAddLead(cid)}
                         quickMode={quickMode && cid === nouveauColId}
                         quickFocusedLeadId={focusedLead?.id}
@@ -521,10 +523,7 @@ export const KanbanBoard = ({
                                 enabled,
                             })
                         }
-                        onDragStartLead={handleLeadDragStart}
-                        onDragEndLead={handleLeadDragEnd}
-                        onDragHover={handleDragHover}
-                        onDropLead={handleDropLead}
+                        onLeadPointerDown={handleLeadPointerDown}
                         onColumnDragStart={handleColumnDragStart}
                         onColumnDragOver={handleColumnDragOver}
                         onColumnDrop={handleColumnDrop}

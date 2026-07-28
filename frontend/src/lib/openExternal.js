@@ -15,19 +15,19 @@ export function isExternalHref(href) {
 }
 
 /**
+ * Ouvre un lien externe de façon non bloquante (clic fluide sur cartes).
  * @param {string} url
  */
-export async function openExternal(url) {
+export function openExternal(url) {
     const href = String(url || "").trim();
     if (!href || !isExternalHref(href)) return;
 
     if (isTauri()) {
-        try {
-            await invoke("crm_open_url", { url: href });
-            return;
-        } catch (err) {
+        // Fire-and-forget : ne pas attendre l’invoke pour garder le clic snappy
+        invoke("crm_open_url", { url: href }).catch((err) => {
             console.warn("[Relia] openExternal:", err);
-        }
+        });
+        return;
     }
 
     try {

@@ -39,7 +39,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ColorPickerRow } from "./ColorPickerRow";
 import { getColumnColor } from "@/lib/columnColors";
-import { isLeadDragTransfer, isLeadDragActive } from "@/lib/dndTransfer";
 import { useCrm } from "@/context/CrmContext";
 import { isNouveauColumn, isWonColumn } from "@/constants/columnPatterns";
 import { isManualRdv } from "@/lib/nextActionUtils";
@@ -96,34 +95,13 @@ const InsertionPlaceholder = () => (
     />
 );
 
-// Each slot between/around cards is a drop target
-const CardDropSlot = ({ index, isActive, onDragOver, onDrop, children, allowLeadDrop = false }) => {
-    const handleDragOver = (e) => {
-        if (allowLeadDrop || isLeadDragActive() || isLeadDragTransfer(e.dataTransfer)) {
-            e.preventDefault();
-            e.stopPropagation();
-            e.dataTransfer.dropEffect = "move";
-            onDragOver(index);
-        }
-    };
-
-    return (
-        <div
-            className="kanban-drop-slot"
-            onDragOver={handleDragOver}
-            onDrop={(e) => {
-                if (allowLeadDrop || isLeadDragActive() || isLeadDragTransfer(e.dataTransfer)) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onDrop(index);
-                }
-            }}
-        >
-            {isActive && <InsertionPlaceholder />}
-            {children}
-        </div>
-    );
-};
+// Zone d’insertion entre cartes (drag pointeur)
+const CardDropSlot = ({ index, isActive, children }) => (
+    <div className="kanban-drop-slot" data-drop-index={index}>
+        {isActive && <InsertionPlaceholder />}
+        {children}
+    </div>
+);
 
 export const KanbanColumn = ({
     column,
@@ -136,10 +114,7 @@ export const KanbanColumn = ({
     onSetColor,
     onToggleAutoFollowup,
     onTogglePromptNote,
-    onDragStartLead,
-    onDragEndLead,
-    onDragHover,
-    onDropLead,
+    onLeadPointerDown,
     onColumnDragStart,
     onColumnDragOver,
     onColumnDrop,
@@ -332,68 +307,51 @@ export const KanbanColumn = ({
         else setName(column.name);
     };
 
-    // Un lead est en train d’être déplacé (état React ou flag synchrone WKWebView)
-    const leadDragging = !!(dragState?.leadId || isLeadDragActive());
-    // Colonne sous le curseur (aucune pré-sélection au départ)
-    const isDragTarget =
-        leadDragging && dragState?.toColumnId === column.id;
-
-    // Which insertion index is currently hovered?
+    // Un lead est en train d’être déplacé
+    const leadDragging = !!dragState?.leadId;
+    const isDragTarget = leadDragging && dragState?.toColumnId === column.id;
     const insertIndex = isDragTarget ? dragState.toIndex : null;
-
-    // Handle drag over the column background (empty column or below all cards)
-    const handleColumnDragOver = useCallback(
-        (e) => {
-            if (dragState?.leadId || isLeadDragActive() || isLeadDragTransfer(e.dataTransfer)) {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-                onDragHover(column.id, leads.length);
-            } else if (e.dataTransfer.types.includes("application/x-column-id")) {
-                onColumnDragOver(e, column.id);
-            }
-        },
-        [column.id, leads.length, onDragHover, onColumnDragOver, dragState?.leadId],
-    );
-
-    const handleColumnDrop = useCallback(
-        (e) => {
-            if (dragState?.leadId || isLeadDragActive() || isLeadDragTransfer(e.dataTransfer)) {
-                e.preventDefault();
-                onDropLead(column.id, leads.length);
-            } else if (e.dataTransfer.types.includes("application/x-column-id")) {
-                onColumnDrop(column.id);
-            }
-        },
-        [column.id, leads.length, onDropLead, onColumnDrop, dragState?.leadId],
-    );
 
     return (
         <div
             data-testid={`kanban-column-${column.id}`}
+            data-kanban-column-id={column.id}
             className={`kanban-col relative shrink-0 flex flex-col transition-colors duration-150 ${
                 isDragTarget
                     ? "column-drop-active"
                     : leadDragging
                       ? "column-drop-ready"
                       : ""
-            }`}
+            } ${leadDragging ? "is-lead-dragging" : ""}`}
             style={{
                 width: `${workspace.columnWidth ?? 300}px`,
             }}
-            onDragOver={handleColumnDragOver}
-            onDrop={handleColumnDrop}
-            onDragLeave={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget)) {}
+            onDragOver={(e) => {
+                // Reorder de colonnes (HTML5) uniquement
+                if (Array.from(e.dataTransfer?.types || []).includes("application/x-column-id")) {
+                    onColumnDragOver(e, column.id);
+                }
+            }}
+            onDrop={(e) => {
+                if (Array.from(e.dataTransfer?.types || []).includes("application/x-column-id")) {
+                    onColumnDrop(column.id);
+                }
             }}
         >
             {/* Contenu */}
-            <div ref={contentRef} className="flex flex-col">
+            <div ref={contentRef} className={`flex flex-col ${leadDragging ? "min-h-[120px]" : ""}`}>
 
             {/* ── Header ── */}
             <div
                 className="px-2 pt-2 pb-1.5 flex items-center gap-1.5 group"
-                draggable
-                onDragStart={(e) => onColumnDragStart(e, column.id)}
+                draggable={!leadDragging}
+                onDragStart={(e) => {
+                    if (leadDragging) {
+                        e.preventDefault();
+                        return;
+                    }
+                    onColumnDragStart(e, column.id);
+                }}
             >
                 {/* Grip — visible au hover */}
                 <button
@@ -609,14 +567,10 @@ export const KanbanColumn = ({
             </div>
 
             {/* Cards list */}
-            <div className="flex-1 px-2 pb-3">
-                {/* Drop slot before first card */}
+            <div className="flex-1 px-2 pb-3" data-drop-index={leads.length}>
                 <CardDropSlot
                     index={0}
                     isActive={isDragTarget && insertIndex === 0}
-                    allowLeadDrop={leadDragging}
-                    onDragOver={onDragHover.bind(null, column.id)}
-                    onDrop={(idx) => onDropLead(column.id, idx)}
                 >
                     <div className="pt-1" />
                 </CardDropSlot>
@@ -629,8 +583,7 @@ export const KanbanColumn = ({
                                 column={column}
                                 workspace={workspace}
                                 onOpen={onOpenLead}
-                                onDragStart={onDragStartLead}
-                                onDragEnd={onDragEndLead}
+                                onPointerDownLead={onLeadPointerDown}
                                 dragging={dragState?.leadId === lead.id}
                                 quickFocused={quickMode && lead.id === quickFocusedLeadId}
                             />
@@ -638,56 +591,35 @@ export const KanbanColumn = ({
                         <CardDropSlot
                             index={i + 1}
                             isActive={isDragTarget && insertIndex === i + 1}
-                            allowLeadDrop={leadDragging}
-                            onDragOver={onDragHover.bind(null, column.id)}
-                            onDrop={(idx) => onDropLead(column.id, idx)}
                         >
                             <div className="pt-2" />
                         </CardDropSlot>
                     </React.Fragment>
                 ))}
 
-                {/* Empty state — pendant un drag, toutes les colonnes vides montrent la case */}
-                {leads.length === 0 && !leadDragging && (
+                {/* Empty state — Nouveau only */}
+                {leads.length === 0 && !leadDragging && isNouveauColumn(column.name) && (
                     <div className="pt-1 pb-2 px-1">
-                        {isNouveauColumn(column.name) ? (
-                            <button
-                                onClick={onAddLead}
-                                className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg border border-dashed border-border hover:border-primary/40 hover:bg-primary/5 transition-colors text-muted-foreground hover:text-primary text-[12px] font-medium"
-                            >
-                                <Plus size={13} />
-                                <span>Nouveau lead</span>
-                            </button>
-                        ) : (
-                            <p className="py-6 text-center text-[12px] text-muted-foreground/50">
-                                Aucun lead
-                            </p>
-                        )}
+                        <button
+                            onClick={onAddLead}
+                            className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg border border-dashed border-border hover:border-primary/40 hover:bg-primary/5 transition-colors text-muted-foreground hover:text-primary text-[12px] font-medium"
+                        >
+                            <Plus size={13} />
+                            <span>Nouveau lead</span>
+                        </button>
                     </div>
                 )}
 
-                {leads.length === 0 && leadDragging && (
+                {leadDragging && (
                     <div
-                        className={`rounded-xl border-2 border-dashed py-8 mx-1 flex items-center justify-center transition-colors ${
+                        data-drop-index={leads.length}
+                        className={`kanban-drop-zone rounded-xl border-2 border-dashed mx-1 flex items-center justify-center transition-colors ${
+                            leads.length === 0 ? "py-10" : "py-3 mt-1"
+                        } ${
                             isDragTarget
                                 ? "border-primary/50 bg-primary/15"
                                 : "border-primary/25 bg-primary/5"
                         }`}
-                        onDragOver={(e) => {
-                            if (dragState?.leadId || isLeadDragActive() || isLeadDragTransfer(e.dataTransfer)) {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                e.dataTransfer.dropEffect = "move";
-                                onDragHover(column.id, 0);
-                            }
-                        }}
-                        onDrop={(e) => {
-                            if (dragState?.leadId || isLeadDragActive() || isLeadDragTransfer(e.dataTransfer)) {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                onDropLead(column.id, 0);
-                            }
-                        }}
                     >
                         <span className={`text-xs font-medium ${isDragTarget ? "text-primary" : "text-foreground/60"}`}>
                             Déposer ici

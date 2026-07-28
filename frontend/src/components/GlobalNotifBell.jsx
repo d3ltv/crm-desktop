@@ -6,7 +6,7 @@ import {
     getAllUnreadNotifs,
     markAllNotifsRead,
     markNotifItemRead,
-} from "@/lib/followupNotifs";
+} from "@/lib/reliaBrain";
 import { PENDING_LEAD_EVENT } from "@/lib/calendarEvents";
 import {
     Popover,
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/popover";
 
 /**
- * Cloche globale — recommandations prospection (pas les dues calendrier).
+ * Cloche globale — notifications intelligentes (pas les dates du calendrier).
  */
 export function GlobalNotifBell() {
     const { state, dispatch } = useCrm();
@@ -68,7 +68,7 @@ export function GlobalNotifBell() {
                 <button
                     type="button"
                     data-testid="home-notifications-btn"
-                    aria-label="Conseils de prospection"
+                    aria-label="Notifications"
                     className="relative w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors"
                 >
                     <Bell size={16} />
@@ -89,13 +89,13 @@ export function GlobalNotifBell() {
             >
                 <div className="px-4 py-3 border-b border-border/60 flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                        <div className="font-semibold tracking-tight text-sm">Conseils</div>
+                        <div className="font-semibold tracking-tight text-sm">Notifications</div>
                         <div className="text-xs text-muted-foreground mt-0.5">
                             {unreadTotal === 0
-                                ? "Rien d'urgent — RDV dans le calendrier"
+                                ? "Rien d'urgent pour l'instant."
                                 : overdueCount > 0
-                                  ? `${overdueCount} oubli${overdueCount > 1 ? "s" : ""} · ${unreadTotal} conseil${unreadTotal > 1 ? "s" : ""}`
-                                  : `${unreadTotal} recommandation${unreadTotal > 1 ? "s" : ""}`}
+                                  ? `${overdueCount} manqué${overdueCount > 1 ? "s" : ""} · ${unreadTotal} notification${unreadTotal > 1 ? "s" : ""}`
+                                  : `${unreadTotal} notification${unreadTotal > 1 ? "s" : ""} à regarder`}
                         </div>
                     </div>
                     {unreadTotal > 0 && (
@@ -115,11 +115,13 @@ export function GlobalNotifBell() {
                 <div className="max-h-80 overflow-y-auto">
                     {unreadNotifs.length === 0 && (
                         <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                            Aucun conseil. Les échéances restent dans le calendrier.
+                            Aucune notification. Les échéances restent dans le calendrier.
                         </div>
                     )}
                     {unreadNotifs.map((item) => {
                         const { lead, overdue, label, title, key, workspaceName } = item;
+                        const heading = lead?.company || title || "Notification générale";
+                        const subline = title && lead?.company ? title : label;
                         return (
                             <div
                                 key={key}
@@ -139,13 +141,26 @@ export function GlobalNotifBell() {
                                     />
                                     <div className="min-w-0 flex-1">
                                         <div className="text-sm font-medium truncate">
-                                            {lead?.company || title || "Conseil"}
+                                            {heading}
                                         </div>
-                                        <div className="text-[11px] text-muted-foreground truncate">
-                                            {workspaceName ? `${workspaceName} · ` : ""}
-                                            {title && lead?.company ? `${title} · ` : ""}
-                                            {label}
+                                        <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                                            {subline}
                                         </div>
+                                        {workspaceName && (
+                                            <div className="text-[10px] text-muted-foreground/75 truncate mt-1">
+                                                Vue : {workspaceName}
+                                            </div>
+                                        )}
+                                        {!lead && workspaceName && (
+                                            <div className="text-[10px] text-primary/80 truncate mt-0.5">
+                                                Notification générale multi-vues
+                                            </div>
+                                        )}
+                                        {!lead && !workspaceName && (
+                                            <div className="text-[10px] text-muted-foreground/75 truncate mt-1">
+                                                Notification générale
+                                            </div>
+                                        )}
                                     </div>
                                 </button>
                                 <button

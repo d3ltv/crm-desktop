@@ -6,8 +6,9 @@ import App from "@/App";
 import { installDesktopStorage } from "@/lib/desktopLocalStorage";
 import { ensureNotificationPermission } from "@/lib/desktopNotifications";
 import { installExternalLinkHandler } from "@/lib/openExternal";
+import { PRODUCT_DISPLAY_NAME } from "@/lib/reliaVariant";
 
-document.title = "Relia";
+document.title = PRODUCT_DISPLAY_NAME;
 
 const isResizeObserverError = (msg) =>
     typeof msg === "string" && msg.includes("ResizeObserver loop");

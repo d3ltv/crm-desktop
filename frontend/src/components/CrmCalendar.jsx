@@ -28,7 +28,7 @@ import {
     writeCalendarScope,
     CALENDAR_EVENT_META,
 } from "@/lib/calendarEvents";
-import { collectDayRecap, filterAndSortRecap, RECAP_KINDS } from "@/lib/dayRecap";
+import { collectDayRecap, filterAndSortRecap, RECAP_KINDS, RECAP_FILTERS } from "@/lib/dayRecap";
 import { markLeadNotifsRead } from "@/lib/followupNotifs";
 import { useCalendarSeenMap } from "@/hooks/useNotifSeenMap";
 import {
@@ -224,8 +224,8 @@ export function CrmCalendar({
         [events, calendarSeenMap]
     );
     const dayRecap = useMemo(
-        () => collectDayRecap(workspaces, selectedKey),
-        [workspaces, selectedKey]
+        () => collectDayRecap(workspaces, selectedKey, { dayEvents }),
+        [workspaces, selectedKey, dayEvents]
     );
 
     const markCalendarAllRead = () => {
@@ -931,12 +931,12 @@ function DayRecapPanel({
         [actions, filter, sort]
     );
 
-    const filters = [
-        { id: "all", label: "Tout", count: summary.total },
-        { id: "joint", label: RECAP_KINDS.joint.filterLabel, count: summary.joint },
-        { id: "note", label: RECAP_KINDS.note.filterLabel, count: summary.note },
-        { id: "noanswer", label: RECAP_KINDS.noanswer.filterLabel, count: summary.noanswer },
-    ];
+    const filters = RECAP_FILTERS.map((f) => ({
+        ...f,
+        count: f.id === "all"
+            ? summary.total
+            : (summary[f.id] || 0),
+    })).filter((f) => f.id === "all" || f.count > 0 || ["activity", "agenda"].includes(f.id));
 
     const sortOptions = [
         { id: "time", label: "Heure" },
@@ -946,9 +946,20 @@ function DayRecapPanel({
 
     const headline = (() => {
         const parts = [];
-        if (summary.joint) parts.push(`${summary.joint} joint${summary.joint > 1 ? "s" : ""}`);
-        if (summary.note) parts.push(`${summary.note} note${summary.note > 1 ? "s" : ""}`);
-        if (summary.noanswer) parts.push(`${summary.noanswer} sans réponse`);
+        if (summary.activity) {
+            parts.push(`${summary.activity} fait${summary.activity > 1 ? "s" : ""}`);
+        }
+        if (summary.agenda) {
+            parts.push(`${summary.agenda} prévu${summary.agenda > 1 ? "s" : ""}`);
+        }
+        // Détail utile si on a des joints / RDV
+        const detail = [];
+        if (summary.joint) detail.push(`${summary.joint} joint${summary.joint > 1 ? "s" : ""}`);
+        if (summary.rdv) detail.push(`${summary.rdv} RDV`);
+        if (summary.noanswer) detail.push(`${summary.noanswer} NRP`);
+        if (detail.length && parts.length) {
+            return `${parts.join(" · ")} — ${detail.join(", ")}`;
+        }
         return parts.length ? parts.join(" · ") : "Rien à montrer";
     })();
 
@@ -1008,7 +1019,7 @@ function DayRecapPanel({
 
                 {/* Filtres + tri */}
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-1" role="tablist" aria-label="Filtrer le récap">
+                    <div className="flex items-center gap-1 flex-wrap" role="tablist" aria-label="Filtrer le récap">
                         {filters.map((f) => {
                             const active = filter === f.id;
                             const disabled = f.id !== "all" && f.count === 0;
@@ -1085,7 +1096,7 @@ function DayRecapPanel({
                         </p>
                         <p className="text-[13px] text-muted-foreground mt-2 leading-relaxed">
                             {summary.total === 0
-                                ? "Les prospects joints et les notes du jour s'affichent ici."
+                                ? "Joints, notes, contacts, RDV et rappels du jour s'affichent ici."
                                 : "Changez de filtre pour revoir la liste."}
                         </p>
                     </div>
@@ -1094,17 +1105,29 @@ function DayRecapPanel({
                         {visible.map((a) => {
                             const time = format(new Date(a.at), "HH:mm");
                             const kindLabel = RECAP_KINDS[a.kind]?.label || a.kind;
+                            const isAgenda = RECAP_KINDS[a.kind]?.group === "agenda";
+                            const overdue = !!a.meta?.overdue;
+                            const canOpen = !!(a.leadId && a.workspaceId);
                             return (
                                 <li key={a.id}>
                                     <button
                                         type="button"
-                                        data-testid={`day-recap-item-${a.leadId}`}
-                                        onClick={() => onOpenLead(a.workspaceId, a.leadId)}
-                                        className="w-full text-left px-5 py-4 hover:bg-muted/40 transition-colors flex gap-4 group"
+                                        data-testid={`day-recap-item-${a.leadId || a.standaloneId || "x"}`}
+                                        disabled={!canOpen}
+                                        onClick={() => {
+                                            if (canOpen) onOpenLead(a.workspaceId, a.leadId);
+                                        }}
+                                        className={cn(
+                                            "w-full text-left px-5 py-4 transition-colors flex gap-4 group",
+                                            canOpen ? "hover:bg-muted/40" : "cursor-default opacity-90"
+                                        )}
                                     >
                                         <time
                                             dateTime={a.at}
-                                            className="w-11 shrink-0 text-[13px] tabular-nums text-muted-foreground pt-0.5"
+                                            className={cn(
+                                                "w-11 shrink-0 text-[13px] tabular-nums pt-0.5",
+                                                overdue ? "text-rose-600 font-medium" : "text-muted-foreground"
+                                            )}
                                         >
                                             {time}
                                         </time>
@@ -1113,8 +1136,17 @@ function DayRecapPanel({
                                                 <span className="text-[15px] font-semibold tracking-tight text-foreground truncate">
                                                     {a.company}
                                                 </span>
-                                                <span className="text-[12px] text-muted-foreground shrink-0">
+                                                <span className={cn(
+                                                    "text-[12px] shrink-0",
+                                                    overdue
+                                                        ? "text-rose-600 font-medium"
+                                                        : isAgenda
+                                                          ? "text-primary"
+                                                          : "text-muted-foreground"
+                                                )}
+                                                >
                                                     {kindLabel}
+                                                    {overdue ? " · retard" : ""}
                                                 </span>
                                             </div>
                                             <p className="text-[13px] text-muted-foreground mt-1 leading-snug line-clamp-2">
@@ -1128,10 +1160,12 @@ function DayRecapPanel({
                                                 </p>
                                             )}
                                         </div>
-                                        <ChevronRight
-                                            size={16}
-                                            className="text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"
-                                        />
+                                        {canOpen && (
+                                            <ChevronRight
+                                                size={16}
+                                                className="text-muted-foreground/30 group-hover:text-muted-foreground shrink-0 mt-1 transition-colors"
+                                            />
+                                        )}
                                     </button>
                                 </li>
                             );
@@ -1179,6 +1213,7 @@ function WatchPanel({ watchList, isDialog, onOpen, dispatch, state, compact = fa
                             defaultLabel={`Rappeler ${ev.company || ev.title}`}
                             hint={ev.subtitle}
                             size="xs"
+                            icon="plus"
                             testId={`calendar-watch-schedule-${ev.leadId}`}
                             onConfirm={(nextAction) => {
                                 const result = scheduleLeadNextAction(dispatch, {

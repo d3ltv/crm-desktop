@@ -25,6 +25,10 @@ import {
     MapPin,
     Pencil,
     Mic,
+    AlignLeft,
+    Link2,
+    Hash,
+    Calendar,
 } from "lucide-react";
 import { CopyBtn } from "./CopyBtn";
 import { Button } from "@/components/ui/button";
@@ -65,7 +69,7 @@ import { isManualRdv, isSuggestedRelance, makeRdvNextAction } from "@/lib/nextAc
 import { AddToCalendarDialog, ConfirmSuggestedRelanceButton, QuickScheduleButton, QuickScheduleForm } from "./AddToCalendarDialog";
 import { VigilanceStrip } from "./VigilanceStrip";
 import { scheduleLeadNextAction, clearLeadSchedule } from "@/lib/scheduleLead";
-import { getBestProspectingSlot } from "@/lib/prospectingSlots";
+import { getLeadIntel } from "@/lib/reliaBrain";
 import { detectInconsistencies } from "@/lib/inconsistencyRules";
 import { PanelSectionCard, HiddenSectionsMenu, PanelSectionsOrganizer } from "./PanelSectionCard";
 import { useVoiceSession } from "@/context/VoiceSessionContext";
@@ -92,8 +96,8 @@ import {
 } from "@/lib/agencyDetection";
 import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
 import { LeadAvatar } from "./LeadAvatar";
-import { getLeadFollowupNotifs } from "@/lib/followupNotifs";
 import { useRecoDayTick } from "@/hooks/useNotifSeenMap";
+import { isRelia2Export } from "@/lib/reliaVariant";
 
 const SECTION_ICONS = { Database, User, MessageSquare, Repeat2, Tag, Trophy, History, CalendarClock, Mic };
 
@@ -295,8 +299,14 @@ const NOTE_CALL_RE = /^(📞|📵)/;
 function leadHasBeenContacted(lead) {
     if (!lead) return false;
     if (lead.lastContact) return true;
+    // Si on a déjà basculé en colonne "Contacté", on considère que l'historique de contact existe
+    // même si lastContact a été effacé (ex: suppression d'une note vocale).
+    if (lead.contactedColumnEnteredAt) return true;
     if ((lead.relances || []).length > 0) return true;
-    return (lead.notes || []).some((n) => NOTE_CALL_RE.test(String(n.text || "").trim()));
+    return (lead.notes || []).some((n) =>
+        !!n?.recordingId
+        || NOTE_CALL_RE.test(String(n.text || "").trim())
+    );
 }
 
 /** Jours calendaires depuis l'entrée dans le CRM (createdAt). */
@@ -315,6 +325,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const { dispatch, state } = useCrm();
     const voice = useVoiceSession();
     const panelMode = state.leadPanelMode || "side";
+    const infoLayoutRows = workspace.panelInfoLayout === "rows";
     const [noteDraft, setNoteDraft] = useState("");
     const [noteSaving, setNoteSaving] = useState(false);
     const [tagDraft, setTagDraft] = useState("");
@@ -402,21 +413,73 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         return () => document.removeEventListener("keydown", onKey);
     }, [open, onClose, voice.status]);
 
+    // Raccourcis : focus note / ouvrir planification relance
+    useEffect(() => {
+        if (!open) return undefined;
+        const onFocusNote = () => {
+            const el = document.querySelector('[data-testid="lead-note-input"]');
+            if (el) {
+                el.focus();
+                el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+            }
+        };
+        const onOpenRelance = () => {
+            setEditingCalendar(true);
+            window.setTimeout(() => {
+                document
+                    .querySelector('[data-testid="lead-edit-next-action"], [data-testid="lead-next-action-card"]')
+                    ?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+            }, 60);
+        };
+        window.addEventListener("relia:focus-new-note", onFocusNote);
+        window.addEventListener("relia:open-relance", onOpenRelance);
+        return () => {
+            window.removeEventListener("relia:focus-new-note", onFocusNote);
+            window.removeEventListener("relia:open-relance", onOpenRelance);
+        };
+    }, [open]);
+
     const scheduleOverdue = useMemo(() => {
         if (!local?.nextAction?.dueAt && !local?.nextAction?.date) return false;
         const due = new Date(local.nextAction.dueAt || `${local.nextAction.date}T09:00:00`);
         return !Number.isNaN(due.getTime()) && due.getTime() < Date.now() - 60000;
     }, [local?.nextAction]);
 
-    const prospectSlot = useMemo(() => {
-        const allWs = (state.order || [])
-            .map((id) => state.workspaces?.[id])
-            .filter(Boolean);
-        return getBestProspectingSlot(allWs);
-    }, [state.workspaces, state.order]);
+    const recoDayTick = useRecoDayTick();
 
-    /** Défaut chips relance Joint — pas le seuil vigilance « pas de réponse ». */
-    const defaultRelanceDays = 2;
+    const allWorkspaces = useMemo(
+        () => (state.order || []).map((id) => state.workspaces?.[id]).filter(Boolean),
+        [state.workspaces, state.order]
+    );
+
+    const leadIntel = useMemo(() => {
+        if (!local?.id || !workspace) return null;
+        return getLeadIntel(workspace, local.id, {
+            dailyGoal: state.settings?.dailyGoal || 20,
+            workspaces: allWorkspaces,
+        });
+    }, [
+        workspace,
+        local?.id,
+        local?.columnId,
+        local?.notes,
+        local?.nextAction,
+        local?.autoFollowup,
+        local?.lastContact,
+        local?.dealValue,
+        local?.phone,
+        local?.email,
+        local?.contact,
+        state.settings?.dailyGoal,
+        allWorkspaces,
+        recoDayTick,
+    ]);
+
+    const prospectSlot = leadIntel?.slot || null;
+    const defaultRelanceDays = leadIntel?.callDefaults?.suggestedScheduleDays
+        ?? leadIntel?.callDefaults?.relanceDays
+        ?? 2;
+    const leadRecos = leadIntel?.conseils || [];
 
     const needsCalendarNudge = useMemo(() => {
         if (!local) return false;
@@ -474,31 +537,6 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         };
     }, [local, scheduleOverdue]);
 
-    const recoDayTick = useRecoDayTick();
-    const leadRecos = useMemo(
-        () => (local?.id
-            ? getLeadFollowupNotifs(workspace, local.id, {
-                dailyGoal: state.settings?.dailyGoal || 20,
-            })
-            : []),
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [
-            workspace?.id,
-            local?.id,
-            local?.columnId,
-            local?.notes,
-            local?.nextAction,
-            local?.autoFollowup,
-            local?.lastContact,
-            local?.dealValue,
-            local?.phone,
-            local?.email,
-            local?.contact,
-            state.settings?.dailyGoal,
-            recoDayTick,
-        ]
-    );
-
     if (!open || !local) return null;
 
     const isJobs = workspace.template === "jobs";
@@ -554,6 +592,19 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         brief.situation || []
     );
     const actionableInsights = (brief.insights || []).filter((i) => i.actionable);
+    const appointmentInsights = actionableInsights.filter((i) => i.type === "appointment");
+    const otherInsights = actionableInsights.filter((i) => i.type !== "appointment");
+    // Évite le doublon « Suggestion d'appel / Date détectée » (notifs) + chip RDV.
+    const briefRecos = leadRecos.filter((item) => {
+        if (item.kind !== "brief_suggestion") return true;
+        const key = String(item.key || "");
+        if (key.includes("brief_appointment") && appointmentInsights.length > 0) return false;
+        if (key.includes("brief_phone") && otherInsights.some((i) => i.type === "phone")) return false;
+        if (key.includes("brief_email") && otherInsights.some((i) => i.type === "email")) return false;
+        if (key.includes("brief_person") && otherInsights.some((i) => i.type === "person")) return false;
+        if (appointmentInsights.length > 0 && /Date détectée/i.test(item.label || "")) return false;
+        return true;
+    });
     const latestNote = (brief.contextualNotes || [])[0] || null;
 
     const applyBriefInsight = (ins) => {
@@ -949,10 +1000,10 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                 ref={panelRef}
                 data-testid="lead-detail-panel"
                 className={panelMode === "modal"
-                    ? "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-[3%] sm:bottom-[3%] sm:left-1/2 sm:-translate-x-1/2 w-full sm:w-[780px] bg-card sm:rounded-xl sm:border border-border shadow-panel animate-in fade-in zoom-in-95 duration-200"
-                    : "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-4 sm:bottom-4 sm:right-4 w-full sm:w-[560px] bg-card sm:rounded-xl sm:border border-border shadow-panel animate-in slide-in-from-right duration-300"}
+                    ? "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-[2%] sm:bottom-[2%] sm:left-1/2 sm:-translate-x-1/2 w-full sm:w-[880px] bg-card sm:rounded-xl sm:border border-border shadow-panel animate-in fade-in zoom-in-95 duration-200"
+                    : "fixed z-50 flex flex-col inset-0 sm:inset-auto sm:top-3 sm:bottom-3 sm:right-3 w-full sm:w-[640px] bg-card sm:rounded-xl sm:border border-border shadow-panel animate-in slide-in-from-right duration-300"}
             >
-                <div className="border-b border-border bg-card px-5 py-3.5 rounded-t-xl shrink-0">
+                <div className="border-b border-border/70 bg-card px-5 py-3.5 rounded-t-xl shrink-0">
                     <div className="flex items-center gap-3">
                         <LeadAvatar
                             lead={local}
@@ -988,13 +1039,17 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 bg-muted/30">
+                <div className={`flex-1 overflow-y-auto px-5 py-4 space-y-3 ${
+                    infoLayoutRows ? "bg-background" : "bg-muted/20"
+                }`}>
                     {/* ═══════════ ZONE A — fixe : Information pertinente + prochaine action ═══════════ */}
 
                     {/* 🧾 Brief interactif — personnalisé par lead (import + notes) */}
                     {showBrief && (
                         <div
-                            className="rounded-xl border border-border bg-card p-3.5 space-y-3 shadow-sm"
+                            className={`rounded-xl border border-border p-3.5 space-y-3 ${
+                                infoLayoutRows ? "bg-transparent shadow-none" : "bg-card shadow-sm"
+                            }`}
                             data-testid="lead-brief-strip"
                         >
                             <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
@@ -1002,14 +1057,52 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 <span>Information pertinente</span>
                             </div>
 
-                            {/* CONSEIL cloche — même reco que dans les notifications */}
-                            {leadRecos.length > 0 && (
-                                <section className="space-y-1.5" data-testid="lead-brief-reco">
+                            {/* RDV détecté — une seule CTA (pas notif + chip) */}
+                            {appointmentInsights.length > 0 && (
+                                <section className="space-y-1.5" data-testid="lead-brief-rdv">
                                     <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                                        Conseil
+                                        Suggestion
                                     </p>
                                     <div className="space-y-1.5">
-                                        {leadRecos.slice(0, 2).map((item) => (
+                                        {appointmentInsights.map((ins) => (
+                                            <button
+                                                key={`${ins.type}-${ins.value}`}
+                                                type="button"
+                                                onClick={() => applyBriefInsight(ins)}
+                                                className="w-full rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-2 flex items-start gap-2 text-left hover:bg-primary/10 transition-colors"
+                                                title="Planifier ce rendez-vous"
+                                                data-testid="lead-brief-suggest-appointment"
+                                            >
+                                                <CalendarClock
+                                                    size={13}
+                                                    strokeWidth={2}
+                                                    className="shrink-0 mt-0.5 text-primary"
+                                                />
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="text-[12px] font-semibold leading-snug text-foreground">
+                                                        RDV détecté
+                                                    </p>
+                                                    <p className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                                                        {ins.value}
+                                                    </p>
+                                                </div>
+                                                <span className="shrink-0 text-[11px] font-medium text-primary mt-0.5">
+                                                    Planifier
+                                                </span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </section>
+                            )}
+
+                            {/* NOTIFICATIONS — hors suggestions déjà affichées */}
+                            {briefRecos.length > 0 && (
+                                <section className="space-y-1.5" data-testid="lead-brief-reco">
+                                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Notifications
+                                    </p>
+                                    <div className="space-y-1.5">
+                                        {briefRecos.slice(0, 2).map((item) => (
                                             <div
                                                 key={item.key}
                                                 className={cn(
@@ -1032,7 +1125,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                 />
                                                 <div className="min-w-0 flex-1">
                                                     <p className="text-[12px] font-semibold leading-snug text-foreground">
-                                                        {item.title || "Conseil Relia"}
+                                                        {item.title || "Notification Relia"}
                                                     </p>
                                                     <p className="text-[11px] text-muted-foreground leading-snug mt-0.5">
                                                         {item.label}
@@ -1044,14 +1137,14 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 </section>
                             )}
 
-                            {/* SUGGESTIONS — en tête (appel / notes) */}
-                            {actionableInsights.length > 0 && (
+                            {/* Autres suggestions (tél., email, contact) */}
+                            {otherInsights.length > 0 && (
                                 <section className="space-y-1.5" data-testid="lead-brief-suggestions">
                                     <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                                         Suggestions
                                     </p>
                                     <div className="flex flex-wrap gap-1.5">
-                                        {actionableInsights.map((ins) => (
+                                        {otherInsights.map((ins) => (
                                             <button
                                                 key={`${ins.type}-${ins.value}`}
                                                 type="button"
@@ -1094,8 +1187,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 </section>
                             )}
 
-                            {/* CONTEXTE — annonce / poste CSV (sans lien) */}
-                            {(brief.annonce || brief.jobTitle || brief.location || brief.contract) && (
+                            {/* CONTEXTE — annonce / poste CSV (sans lien) — masqué en Relia 2 */}
+                            {!isRelia2Export && (brief.annonce || brief.jobTitle || brief.location || brief.contract) && (
                                 <section className="space-y-0.5" data-testid="lead-brief-contexte">
                                     <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                                         Contexte
@@ -1153,6 +1246,25 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                             )}
                                         </p>
                                     )}
+                                </section>
+                            )}
+
+                            {/* Relia 2 — Site web mis en avant dans Informations pertinentes */}
+                            {isRelia2Export && brief.website && (
+                                <section className="space-y-0.5" data-testid="lead-brief-website">
+                                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Site web
+                                    </p>
+                                    <a
+                                        href={websiteHref(brief.website) || undefined}
+                                        target="_blank"
+                                        rel="noreferrer noopener"
+                                        className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-primary hover:underline max-w-full"
+                                        title={brief.website}
+                                    >
+                                        <Globe size={12} className="shrink-0 opacity-80" />
+                                        <span className="truncate">{displayUrl(websiteHref(brief.website) || brief.website)}</span>
+                                    </a>
                                 </section>
                             )}
 
@@ -1225,8 +1337,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 </section>
                             )}
 
-                            {/* Offre d'emploi — lien souligné, couleur selon la source */}
-                            {brief.offerLink && (
+                            {/* Offre d'emploi — lien souligné, couleur selon la source — masqué en Relia 2 */}
+                            {!isRelia2Export && brief.offerLink && (
                                 <a
                                     href={brief.offerLink.href}
                                     target="_blank"
@@ -1384,79 +1496,157 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                 : id === "relances" && (local.relances || []).length > 0
                                     ? (local.relances || []).length
                                     : undefined,
+                            flat: infoLayoutRows,
                         };
 
                         switch (id) {
                             case "imported": {
                                 return (
                                     <PanelSectionCard {...sectionProps}>
-                                        <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
-                                            {Object.entries(local.extra).map(([k, v]) => {
-                                                const alreadyPromoted = (local.customFields || []).some(
-                                                    (cf) => cf.label.toLowerCase() === k.toLowerCase() && cf.value
-                                                );
-                                                const isHighlighted = (local.customFields || []).some(
-                                                    (cf) => cf.label === k && cf.highlight
-                                                );
-                                                const href = valueAsHref(v);
-                                                return (
-                                                    <div
-                                                        key={k}
-                                                        className="flex items-start gap-2 px-3 py-2 hover:bg-muted/30 transition-colors group"
-                                                    >
-                                                        <div className="flex-1 min-w-0 grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2 text-sm">
-                                                            <span className="text-muted-foreground truncate text-[11px] font-medium pt-0.5">{k}</span>
-                                                            <span className="min-w-0 flex items-start gap-1 group/row">
-                                                                {href ? (
+                                        {infoLayoutRows ? (
+                                            <div className="px-1 py-0.5" data-testid="lead-imported-rows">
+                                                {Object.entries(local.extra).map(([k, v]) => {
+                                                    const alreadyPromoted = (local.customFields || []).some(
+                                                        (cf) => cf.label.toLowerCase() === k.toLowerCase() && cf.value
+                                                    );
+                                                    const isHighlighted = (local.customFields || []).some(
+                                                        (cf) => cf.label === k && cf.highlight
+                                                    );
+                                                    const href = valueAsHref(v);
+                                                    const empty = v == null || String(v).trim() === "";
+                                                    const Icon = propertyIconFor(k, v);
+                                                    return (
+                                                        <div
+                                                            key={k}
+                                                            className="group grid grid-cols-[14px_minmax(0,34%)_minmax(0,1fr)_auto] items-start gap-x-2.5 px-2 py-2 rounded-md hover:bg-muted/40 transition-colors"
+                                                        >
+                                                            <Icon size={13} strokeWidth={1.75} className="mt-0.5 text-muted-foreground/55 shrink-0" aria-hidden />
+                                                            <span className="text-[12px] text-muted-foreground truncate leading-snug pt-0.5" title={k}>{k}</span>
+                                                            <div className="min-w-0 flex items-start gap-1 group/row">
+                                                                {empty ? (
+                                                                    <span className="text-[12.5px] text-muted-foreground/40 italic">Vide</span>
+                                                                ) : href ? (
                                                                     <a
                                                                         href={href}
                                                                         target="_blank"
                                                                         rel="noreferrer noopener"
-                                                                        className="text-[12px] text-primary hover:underline break-all leading-snug"
+                                                                        className="text-[12.5px] text-primary hover:underline break-all leading-snug"
                                                                     >
                                                                         {displayUrl(href)}
                                                                     </a>
                                                                 ) : (
-                                                                    <span className="text-[12px] break-words leading-snug">{String(v)}</span>
+                                                                    <span className="text-[12.5px] text-foreground/90 break-words leading-snug">{String(v)}</span>
                                                                 )}
-                                                                <CopyBtn value={String(v)} className="opacity-0 group-hover/row:opacity-100 mt-0.5" />
-                                                            </span>
+                                                                {!empty && <CopyBtn value={String(v)} className="opacity-0 group-hover/row:opacity-100 mt-0.5" />}
+                                                            </div>
+                                                            <div className="flex items-center gap-0.5 shrink-0">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => highlightExtraField(k, v)}
+                                                                    title={isHighlighted ? "Retirer de la carte Kanban" : "Afficher sur la carte Kanban"}
+                                                                    className={`w-6 h-6 rounded-md flex items-center justify-center transition-colors ${
+                                                                        isHighlighted
+                                                                            ? "text-amber-500 bg-amber-500/10"
+                                                                            : "text-muted-foreground/35 hover:text-amber-500 hover:bg-amber-500/10 opacity-0 group-hover:opacity-100"
+                                                                    }`}
+                                                                >
+                                                                    <Star size={11} strokeWidth={2} className={isHighlighted ? "fill-amber-500" : ""} />
+                                                                </button>
+                                                                {alreadyPromoted ? (
+                                                                    <span className="w-6 h-6 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                                                                        <CheckCircle2 size={12} />
+                                                                    </span>
+                                                                ) : (
+                                                                    <ExtraPromoteButton
+                                                                        extraKey={k}
+                                                                        value={v}
+                                                                        onPromote={promoteExtraField}
+                                                                    />
+                                                                )}
+                                                                <ExtraDeleteButton
+                                                                    extraKey={k}
+                                                                    extraValue={v}
+                                                                    onDelete={deleteLeadExtraField}
+                                                                />
+                                                            </div>
                                                         </div>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => highlightExtraField(k, v)}
-                                                            title={isHighlighted ? "Retirer de la carte Kanban" : "Afficher sur la carte Kanban"}
-                                                            className={`shrink-0 w-6 h-6 rounded-md flex items-center justify-center transition-colors ${
-                                                                isHighlighted
-                                                                    ? "text-amber-500 bg-amber-500/10"
-                                                                    : "text-muted-foreground/40 hover:text-amber-500 hover:bg-amber-500/10 opacity-0 group-hover:opacity-100"
-                                                            }`}
-                                                        >
-                                                            <Star size={11} strokeWidth={2} className={isHighlighted ? "fill-amber-500" : ""} />
-                                                        </button>
-                                                        {alreadyPromoted ? (
-                                                            <span className="shrink-0 text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center mt-1">
-                                                                <CheckCircle2 size={11} />
-                                                            </span>
-                                                        ) : (
-                                                            <ExtraPromoteButton
-                                                                extraKey={k}
-                                                                value={v}
-                                                                onPromote={promoteExtraField}
-                                                            />
-                                                        )}
-                                                        <ExtraDeleteButton
-                                                            extraKey={k}
-                                                            extraValue={v}
-                                                            onDelete={deleteLeadExtraField}
-                                                        />
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                        <p className="text-[11px] text-muted-foreground px-0.5">
-                                            ↑ Ajoute le champ sur <strong>tous les leads</strong> sans écraser.
-                                        </p>
+                                                    );
+                                                })}
+                                                <p className="text-[11px] text-muted-foreground px-2 pt-1 pb-2">
+                                                    ↑ Ajoute le champ sur <strong>tous les leads</strong> sans écraser.
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
+                                                    {Object.entries(local.extra).map(([k, v]) => {
+                                                        const alreadyPromoted = (local.customFields || []).some(
+                                                            (cf) => cf.label.toLowerCase() === k.toLowerCase() && cf.value
+                                                        );
+                                                        const isHighlighted = (local.customFields || []).some(
+                                                            (cf) => cf.label === k && cf.highlight
+                                                        );
+                                                        const href = valueAsHref(v);
+                                                        return (
+                                                            <div
+                                                                key={k}
+                                                                className="flex items-start gap-2 px-3 py-2 hover:bg-muted/30 transition-colors group"
+                                                            >
+                                                                <div className="flex-1 min-w-0 grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2 text-sm">
+                                                                    <span className="text-muted-foreground truncate text-[11px] font-medium pt-0.5">{k}</span>
+                                                                    <span className="min-w-0 flex items-start gap-1 group/row">
+                                                                        {href ? (
+                                                                            <a
+                                                                                href={href}
+                                                                                target="_blank"
+                                                                                rel="noreferrer noopener"
+                                                                                className="text-[12px] text-primary hover:underline break-all leading-snug"
+                                                                            >
+                                                                                {displayUrl(href)}
+                                                                            </a>
+                                                                        ) : (
+                                                                            <span className="text-[12px] break-words leading-snug">{String(v)}</span>
+                                                                        )}
+                                                                        <CopyBtn value={String(v)} className="opacity-0 group-hover/row:opacity-100 mt-0.5" />
+                                                                    </span>
+                                                                </div>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => highlightExtraField(k, v)}
+                                                                    title={isHighlighted ? "Retirer de la carte Kanban" : "Afficher sur la carte Kanban"}
+                                                                    className={`shrink-0 w-6 h-6 rounded-md flex items-center justify-center transition-colors ${
+                                                                        isHighlighted
+                                                                            ? "text-amber-500 bg-amber-500/10"
+                                                                            : "text-muted-foreground/40 hover:text-amber-500 hover:bg-amber-500/10 opacity-0 group-hover:opacity-100"
+                                                                    }`}
+                                                                >
+                                                                    <Star size={11} strokeWidth={2} className={isHighlighted ? "fill-amber-500" : ""} />
+                                                                </button>
+                                                                {alreadyPromoted ? (
+                                                                    <span className="shrink-0 text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center mt-1">
+                                                                        <CheckCircle2 size={11} />
+                                                                    </span>
+                                                                ) : (
+                                                                    <ExtraPromoteButton
+                                                                        extraKey={k}
+                                                                        value={v}
+                                                                        onPromote={promoteExtraField}
+                                                                    />
+                                                                )}
+                                                                <ExtraDeleteButton
+                                                                    extraKey={k}
+                                                                    extraValue={v}
+                                                                    onDelete={deleteLeadExtraField}
+                                                                />
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                                <p className="text-[11px] text-muted-foreground px-0.5">
+                                                    ↑ Ajoute le champ sur <strong>tous les leads</strong> sans écraser.
+                                                </p>
+                                            </>
+                                        )}
                                     </PanelSectionCard>
                                 );
                             }
@@ -1464,6 +1654,105 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                             case "contact": {
                                 return (
                                     <PanelSectionCard {...sectionProps}>
+                                        {infoLayoutRows ? (
+                                            <div className="px-1 py-0.5 space-y-0" data-testid="lead-contact-rows">
+                                                <FieldGroupRows
+                                                    icon={User}
+                                                    label={isJobs ? "Recruteur / Contact RH" : "Contact"}
+                                                    baseLabel={isJobs ? "Contact RH" : "Contact"}
+                                                    value={local.contact}
+                                                    onChange={(v) => patch({ contact: v })}
+                                                    testId="lead-contact-input"
+                                                    customFields={local.customFields || []}
+                                                    lastAddedFieldLabel={lastAddedFieldLabel}
+                                                    onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                                    onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                                    onUpdateCf={(cid, v) => updateCustomField(cid, { value: v })}
+                                                    onDeleteCf={(cid) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: cid })}
+                                                />
+                                                <FieldGroupRows
+                                                    icon={Phone}
+                                                    label="Téléphone"
+                                                    baseLabel="Téléphone"
+                                                    value={local.phone}
+                                                    onChange={(v) => patch({ phone: v })}
+                                                    testId="lead-phone-input"
+                                                    type="tel"
+                                                    linkHref={telHref(local.phone)}
+                                                    customFields={local.customFields || []}
+                                                    lastAddedFieldLabel={lastAddedFieldLabel}
+                                                    onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                                    onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                                    onUpdateCf={(cid, v) => updateCustomField(cid, { value: v })}
+                                                    onDeleteCf={(cid) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: cid })}
+                                                />
+                                                <FieldGroupRows
+                                                    icon={Mail}
+                                                    label="Email"
+                                                    baseLabel="Email"
+                                                    value={local.email}
+                                                    onChange={(v) => patch({ email: v })}
+                                                    testId="lead-email-input"
+                                                    type="email"
+                                                    linkHref={mailtoHref(local.email)}
+                                                    customFields={local.customFields || []}
+                                                    lastAddedFieldLabel={lastAddedFieldLabel}
+                                                    onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                                    onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                                    onUpdateCf={(cid, v) => updateCustomField(cid, { value: v })}
+                                                    onDeleteCf={(cid) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: cid })}
+                                                />
+                                                <FieldGroupRows
+                                                    icon={Globe}
+                                                    label={isJobs ? "Lien offre / Site entreprise" : "Site web"}
+                                                    baseLabel={isJobs ? "Site" : "Site web"}
+                                                    value={local.website}
+                                                    onChange={(v) => patch({ website: v })}
+                                                    testId="lead-website-input"
+                                                    linkHref={websiteHref(local.website)}
+                                                    linkIsExternal
+                                                    customFields={local.customFields || []}
+                                                    lastAddedFieldLabel={lastAddedFieldLabel}
+                                                    onClearLastAdded={() => setLastAddedFieldLabel(null)}
+                                                    onAdd={(label) => { dispatch({ type: "ADD_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, label, value: "", pinned: false, isMainDuplicate: true }); setLastAddedFieldLabel(label); }}
+                                                    onUpdateCf={(cid, v) => updateCustomField(cid, { value: v })}
+                                                    onDeleteCf={(cid) => dispatch({ type: "REMOVE_CUSTOM_FIELD", workspaceId: workspace.id, leadId: local.id, fieldId: cid })}
+                                                />
+                                                {(local.customFields || []).filter((f) => !isMainFieldDuplicate(f.label)).map((f) => {
+                                                    const val = f.value || "";
+                                                    const href = valueAsHref(val)
+                                                        || (/^[+\d\s.\-()]{7,}$/.test(val) && val.replace(/\D/g, "").length >= 7
+                                                            ? `tel:${val.replace(/[^+\d]/g, "")}`
+                                                            : null)
+                                                        || (val.includes("@") && val.includes(".") ? `mailto:${val.trim()}` : null);
+                                                    return (
+                                                        <PropertyEditableRow
+                                                            key={f.id}
+                                                            icon={propertyIconFor(f.label, val)}
+                                                            label={f.label}
+                                                            value={val}
+                                                            onChange={(v) => updateCustomField(f.id, { value: v })}
+                                                            linkHref={href}
+                                                            linkIsExternal={!!(href && !href.startsWith("tel:") && !href.startsWith("mailto:"))}
+                                                            trailing={(
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => toggleHighlightCustomField(f.id, f.highlight, f.label)}
+                                                                    title={f.highlight ? "Retirer de la carte" : "Afficher sur la carte"}
+                                                                    className={`w-6 h-6 rounded-md flex items-center justify-center transition-colors ${
+                                                                        f.highlight
+                                                                            ? "text-amber-500 bg-amber-500/10"
+                                                                            : "text-muted-foreground/30 hover:text-amber-500 opacity-0 group-hover:opacity-100"
+                                                                    }`}
+                                                                >
+                                                                    <Star size={11} strokeWidth={2} className={f.highlight ? "fill-amber-500" : ""} />
+                                                                </button>
+                                                            )}
+                                                        />
+                                                    );
+                                                })}
+                                            </div>
+                                        ) : (
                                         <div className="space-y-2.5">
                                             <FieldGroup
                                                 icon={User}
@@ -1557,6 +1846,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                                 </>
                                             )}
                                         </div>
+                                        )}
                                     </PanelSectionCard>
                                 );
                             }
@@ -2063,6 +2353,181 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     );
 };
 
+function propertyIconFor(key, rawValue) {
+    const k = String(key || "").toLowerCase();
+    const v = rawValue == null ? "" : String(rawValue);
+    if (/téléphone|telephone|phone|tel/.test(k)) return Phone;
+    if (/email|mail/.test(k)) return Mail;
+    if (/website|site|url|lien/.test(k)) return Globe;
+    if (/contact|nom|prénom|prenom|dirigeant|recruteur/.test(k)) return User;
+    if (/date|depuis|publication/.test(k)) return Calendar;
+    if (/ville|adresse|gmaps|postal|département|departement/.test(k)) return MapPin;
+    if (v && /^https?:\/\//i.test(v.trim())) return Link2;
+    if (v && /^[+\d\s.\-()]{7,}$/.test(v) && v.replace(/\D/g, "").length >= 7) return Phone;
+    if (v && v.includes("@") && v.includes(".")) return Mail;
+    if (v && /^\d+([.,]\d+)?$/.test(v.trim())) return Hash;
+    return AlignLeft;
+}
+
+/** Ligne éditable type Notion (fiche prospect mode Lignes). */
+const PropertyEditableRow = ({
+    icon: Icon,
+    label,
+    value,
+    onChange,
+    testId,
+    type = "text",
+    linkHref,
+    linkIsExternal = false,
+    trailing = null,
+    onAdd = null,
+    onDelete = null,
+    autoFocus = false,
+    onFocused,
+}) => {
+    const inputRef = useRef(null);
+    const empty = value == null || String(value).trim() === "";
+
+    useEffect(() => {
+        if (autoFocus && inputRef.current) {
+            inputRef.current.focus();
+            onFocused?.();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [autoFocus]);
+
+    return (
+        <div className="group grid grid-cols-[14px_minmax(0,34%)_minmax(0,1fr)_auto] items-start gap-x-2.5 px-2 py-1.5 rounded-md hover:bg-muted/40 transition-colors">
+            <Icon size={13} strokeWidth={1.75} className="mt-1.5 text-muted-foreground/55 shrink-0" aria-hidden />
+            <div className="flex items-center gap-1 min-w-0 pt-1">
+                <span className="text-[12px] text-muted-foreground truncate leading-snug" title={label}>{label}</span>
+                {onAdd && (
+                    <button
+                        type="button"
+                        onClick={onAdd}
+                        title="Ajouter un doublon"
+                        className="w-4 h-4 rounded flex items-center justify-center text-muted-foreground/30 hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                    >
+                        <Plus size={11} strokeWidth={2.5} />
+                    </button>
+                )}
+            </div>
+            <div className="min-w-0 flex items-start gap-1 group/row">
+                <input
+                    ref={inputRef}
+                    data-testid={testId}
+                    type={type}
+                    value={value || ""}
+                    onChange={(e) => onChange(e.target.value)}
+                    placeholder="Vide"
+                    className={`flex-1 min-w-0 bg-transparent outline-none text-[12.5px] leading-snug py-1 rounded px-1 -mx-1 focus:bg-muted/50 ${
+                        empty ? "text-muted-foreground/40 italic placeholder:italic" : "text-foreground/90"
+                    } ${autoFocus ? "ring-1 ring-primary/40" : ""}`}
+                />
+                {!empty && <CopyBtn value={String(value)} className="opacity-0 group-hover/row:opacity-100 mt-1" />}
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0 pt-0.5">
+                {linkHref && !empty && (
+                    <a
+                        href={linkHref}
+                        target={linkIsExternal ? "_blank" : undefined}
+                        rel={linkIsExternal ? "noreferrer noopener" : undefined}
+                        title={linkIsExternal ? displayUrl(linkHref) : value}
+                        className="w-6 h-6 rounded-md flex items-center justify-center text-primary/70 hover:bg-primary/10 opacity-0 group-hover:opacity-100"
+                    >
+                        <Link2 size={12} strokeWidth={2} />
+                    </a>
+                )}
+                {trailing}
+                {onDelete && (
+                    <button
+                        type="button"
+                        onClick={onDelete}
+                        title={`Supprimer ${label}`}
+                        className="w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground/25 hover:text-rose-500 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100"
+                    >
+                        <X size={12} strokeWidth={2} />
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+};
+
+const FieldGroupRows = ({
+    icon: Icon,
+    label,
+    baseLabel,
+    value,
+    onChange,
+    testId,
+    type = "text",
+    linkHref,
+    linkIsExternal = false,
+    customFields,
+    lastAddedFieldLabel,
+    onClearLastAdded,
+    onAdd,
+    onUpdateCf,
+    onDeleteCf,
+}) => {
+    const base = baseLabel.toLowerCase();
+    const dupes = (customFields || []).filter((f) => {
+        const n = (f.label || "").toLowerCase().trim();
+        if (n === base) return true;
+        return new RegExp("^" + base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\d+$").test(n);
+    });
+    const nextNum = (() => {
+        let max = 1;
+        for (const f of dupes) {
+            const m = (f.label || "").toLowerCase().trim().match(/(\d+)\s*$/);
+            if (m) max = Math.max(max, Number(m[1]));
+            else max = Math.max(max, 2);
+        }
+        return max + 1;
+    })();
+
+    const resolveHref = (val) => {
+        if (!val) return null;
+        if (/^[+\d\s.\-()]{7,}$/.test(val) && val.replace(/\D/g, "").length >= 7) {
+            return "tel:" + val.replace(/[^+\d]/g, "");
+        }
+        if (val.includes("@") && val.includes(".")) return "mailto:" + val.trim();
+        return valueAsHref(val);
+    };
+
+    return (
+        <>
+            <PropertyEditableRow
+                icon={Icon}
+                label={label}
+                value={value}
+                onChange={onChange}
+                testId={testId}
+                type={type}
+                linkHref={linkHref}
+                linkIsExternal={linkIsExternal}
+                onAdd={() => onAdd(baseLabel + " " + nextNum)}
+            />
+            {dupes.map((f) => (
+                <PropertyEditableRow
+                    key={f.id}
+                    icon={Icon}
+                    label={f.label}
+                    value={f.value || ""}
+                    onChange={(v) => onUpdateCf(f.id, v)}
+                    type={type}
+                    linkHref={resolveHref(f.value)}
+                    linkIsExternal={!!(resolveHref(f.value) && !String(resolveHref(f.value)).startsWith("tel:") && !String(resolveHref(f.value)).startsWith("mailto:"))}
+                    autoFocus={lastAddedFieldLabel === f.label}
+                    onFocused={onClearLastAdded}
+                    onDelete={() => onDeleteCf(f.id)}
+                />
+            ))}
+        </>
+    );
+};
+
 const ExtraPromoteButton = ({ extraKey, value, onPromote }) => {
     if (!value) return null;
 
@@ -2070,7 +2535,7 @@ const ExtraPromoteButton = ({ extraKey, value, onPromote }) => {
         <button
             onClick={() => onPromote(extraKey)}
             title={`Ajouter « ${extraKey} » comme champ personnalisé pour tous les leads (sans écraser)`}
-            className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-primary hover:bg-primary/10 transition-colors"
+            className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-primary hover:bg-primary/10 transition-colors opacity-0 group-hover:opacity-100"
             aria-label={`Promouvoir ${extraKey}`}
         >
             <ArrowUp size={13} strokeWidth={2.5} />

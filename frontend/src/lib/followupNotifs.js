@@ -20,11 +20,13 @@ import {
 } from "@/constants/columnPatterns";
 import { parseNote, detectAppointment } from "@/lib/noteParser";
 import {
-    getWorkspaceRecoProfile,
     workspaceRecoContext,
     workspaceMedianDeal,
 } from "@/lib/recoProfile";
 import { getLearnedRecoOverrides, learnedKindBoost, trackNotifInteraction } from "@/lib/usageMemory";
+import { countContactsToday } from "@/lib/dailyContacts";
+import { getLeadVigilance } from "@/lib/inconsistencyRules";
+import { resolveCoachingProfile } from "@/lib/coachingProfile";
 
 const SEEN_ITEMS_KEY = "crm_notif_seen_items_v1";
 const LEGACY_SEEN_MAP_KEY = "crm_notif_seen_map_v1";
@@ -125,21 +127,25 @@ function lastReachedAt(lead) {
     return bestAt;
 }
 
-function noteCorpus(lead) {
-    return (lead.notes || []).map((n) => String(n.text || "")).join("\n");
+/** Corpus limité aux N notes les plus récentes (évite faux positifs sur vieux textes). */
+function recentNoteCorpus(lead, limit = 3) {
+    const notes = [...(lead.notes || [])].sort(
+        (a, b) => new Date(b.at || 0) - new Date(a.at || 0)
+    );
+    return notes.slice(0, limit).map((n) => String(n.text || "")).join("\n");
 }
 
 function hasInterestSignal(lead) {
     if (Number(lead.dealValue) > 0) return true;
-    return INTEREST_RE.test(noteCorpus(lead));
+    return INTEREST_RE.test(recentNoteCorpus(lead, 3));
 }
 
 function hasCallbackLaterSignal(lead) {
-    return CALLBACK_LATER_RE.test(noteCorpus(lead));
+    return CALLBACK_LATER_RE.test(recentNoteCorpus(lead, 3));
 }
 
 function hasHardObjection(lead) {
-    return OBJECTION_RE.test(noteCorpus(lead));
+    return OBJECTION_RE.test(recentNoteCorpus(lead, 4));
 }
 
 /** Stats d’appels depuis les notes structurées. */
@@ -292,15 +298,12 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
     const bucket = hourBucket(now);
     const dayPart = weekdayKey(now);
     const columns = workspace?.columns || {};
-    const profileBase = getWorkspaceRecoProfile(workspace);
-    const learned = getLearnedRecoOverrides(workspace?.id);
-    const profile = learned.confidence >= 0.12
-        ? { ...profileBase, ...Object.fromEntries(
-            Object.entries(learned).filter(([k, v]) => (
-                !["confidence", "peakHour", "kindAffinity", "samples"].includes(k) && v !== undefined
-            ))
-        ) }
-        : profileBase;
+    // Profil fourni par le cerveau, sinon merge local (organe + cœur)
+    const resolved = opts.profile
+        ? { profile: opts.profile, learned: opts.learned || getLearnedRecoOverrides(workspace?.id) }
+        : resolveCoachingProfile(workspace);
+    const profile = resolved.profile;
+    const learned = resolved.learned;
     const ctx = workspaceRecoContext(workspace, profile);
     const medianDeal = workspaceMedianDeal(workspace);
     const candidates = [];
@@ -319,13 +322,13 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
     };
 
     let activeCount = 0;
-    let contactedToday = 0;
     let staleNouveau = 0;
     let forgotRelance = 0;
     let rdvOpportunities = 0;
     let overdueCoaching = 0;
     let stuckProp = 0;
     let hotLeads = 0;
+    const contactedToday = countContactsToday(workspace, now);
 
     for (const lead of Object.values(workspace?.leads || {})) {
         if (!lead?.id || lead.archived) continue;
@@ -349,10 +352,6 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         const objection = hasHardObjection(lead);
         const later = hasCallbackLaterSignal(lead);
         const calendarOwns = sched.active;
-
-        if (lead.lastContact && toLocalDateKey(lead.lastContact) === todayKey) {
-            contactedToday += 1;
-        }
 
         // ── Hot lead : joint récent + intérêt → RDV prioritaire ─────────────
         const isHot =
@@ -921,18 +920,30 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
 }
 
 /**
- * Kinds déjà portés par Vigilance sur la fiche lead.
- * Restent dans la cloche ; exclus de « Information pertinente → Conseil ».
+ * Kinds toujours exclus du bloc « Conseil » fiche (qualité fiche = Vigilance).
+ * Les autres doublons sont filtrés via VIGILANCE_SUPPRESSES_CONSEIL si l’issue est active.
  */
 const BRIEF_VIGILANCE_KINDS = new Set([
     "incomplete_card",
     "missing_phone",
 ]);
 
+/** Vigilance id → kinds Conseil à masquer sur la même fiche. */
+const VIGILANCE_SUPPRESSES_CONSEIL = {
+    nouveau_sans_coord: ["incomplete_card", "missing_phone"],
+    prospection_sans_tel: ["missing_phone", "incomplete_card"],
+    meeting_sans_rdv: ["meeting_sans_rdv", "suggest_rdv"],
+    rdv_overdue: ["suggest_rdv", "rdv_followup"],
+    no_answer_stale: ["forgot_relance", "channel_switch"],
+    contact_gap: ["cold_gap"],
+    nouveau_stale: ["stale_nouveau"],
+    contacted_sans_trace: ["stale_contacted"],
+};
+
 /**
  * Conseils actifs pour UN lead (fiche / Information pertinente).
  * Ignore le plafond workspace : on recalcule sur ce prospect seul.
- * Exclut les kinds Vigilance pour éviter le doublon Conseil / Vigilance.
+ * Exclut les kinds déjà couverts par Vigilance.
  * @param {object} workspace
  * @param {string} leadId
  * @param {{ now?: Date, dailyGoal?: number }} [opts]
@@ -941,11 +952,23 @@ const BRIEF_VIGILANCE_KINDS = new Set([
 export function getLeadFollowupNotifs(workspace, leadId, opts = {}) {
     const lead = workspace?.leads?.[leadId];
     if (!lead?.id || !workspace?.id) return [];
+    const now = opts.now ? new Date(opts.now) : new Date();
+    const vigIds = new Set(
+        (getLeadVigilance(lead, workspace.columns || {}, workspace.inconsistencyConfig, now).issues || [])
+            .map((i) => i.id)
+            .filter(Boolean)
+    );
+    const suppressed = new Set(BRIEF_VIGILANCE_KINDS);
+    for (const vid of vigIds) {
+        for (const kind of VIGILANCE_SUPPRESSES_CONSEIL[vid] || []) {
+            suppressed.add(kind);
+        }
+    }
     return getWorkspaceFollowupNotifs(
         { ...workspace, leads: { [leadId]: lead } },
         opts
     ).filter(
-        (item) => item.lead?.id === leadId && !BRIEF_VIGILANCE_KINDS.has(item.kind)
+        (item) => item.lead?.id === leadId && !suppressed.has(item.kind)
     );
 }
 

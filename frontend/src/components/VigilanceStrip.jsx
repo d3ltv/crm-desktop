@@ -1,13 +1,10 @@
 import React, { useState } from "react";
 import {
     AlertTriangle,
-    CalendarClock,
-    CalendarPlus,
     Phone,
     Mail,
-    Euro,
     UserPlus,
-    Check,
+    Plus,
     X,
 } from "lucide-react";
 import {
@@ -40,8 +37,22 @@ const TITLE = {
     violet: "text-violet-800 dark:text-violet-200",
 };
 
-const ICON_BTN =
-    "shrink-0 h-7 w-7 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/60 inline-flex items-center justify-center transition-colors";
+/** Bouton action teinté comme la pastille du problème. */
+function actionBtnClass(sev = "warning") {
+    const base =
+        "shrink-0 h-5 w-5 rounded-md border inline-flex items-center justify-center transition-colors";
+    if (sev === "critical") {
+        return `${base} border-rose-500/35 bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-500/15`;
+    }
+    if (sev === "violet") {
+        return `${base} border-violet-500/35 bg-violet-500/10 text-violet-600 dark:text-violet-400 hover:bg-violet-500/15`;
+    }
+    if (sev === "info") {
+        return `${base} border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/60`;
+    }
+    // warning (défaut) — ambre / orange comme la pastille
+    return `${base} border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/15`;
+}
 
 /** Dates FR dans un message (ex. « 24 juil. 2026 », « 24/07/2026 »). */
 const DATE_IN_TEXT_RE =
@@ -91,33 +102,13 @@ function actionTitle(item) {
 }
 
 function ActionIcon({ item }) {
-    if (item.id === "prospection_sans_tel" || item.id === "nouveau_sans_coord") {
-        return <Phone size={13} strokeWidth={2} />;
+    if (actionTitle(item) === "Ignorer") {
+        return <X size={11} strokeWidth={2.25} />;
     }
-    if (
-        item.id === "meeting_sans_rdv"
-        || item.id === "rdv_detected_unplanned"
-        || item.id === "rdv_overdue"
-        || item.action?.type === "plan_rdv"
-    ) {
-        return <CalendarClock size={13} strokeWidth={2} />;
-    }
-    if (
-        item.id === "contacted_sans_trace"
-        || item.id === "no_answer_stale"
-        || item.id === "contact_gap"
-        || item.id === "nouveau_stale"
-    ) {
-        return <CalendarPlus size={13} strokeWidth={2} />;
-    }
-    if (item.id === "won_sans_valeur" || item.id === "won_no_close_date") {
-        return <Euro size={13} strokeWidth={2} />;
-    }
-    if (item.action?.type === "apply_field") return <Check size={13} strokeWidth={2.5} />;
-    return <X size={13} strokeWidth={2} />;
+    return <Plus size={12} strokeWidth={2.5} />;
 }
 
-function ContactQuickAdd({ onSave, testId }) {
+function ContactQuickAdd({ onSave, testId, sev = "warning" }) {
     const [open, setOpen] = useState(false);
     const [phone, setPhone] = useState("");
     const [email, setEmail] = useState("");
@@ -140,12 +131,12 @@ function ContactQuickAdd({ onSave, testId }) {
                     title="Ajouter téléphone / email"
                     aria-label="Ajouter téléphone / email"
                     data-testid={testId}
-                    className={ICON_BTN}
+                    className={actionBtnClass(sev)}
                 >
-                    <Phone size={13} strokeWidth={2} />
+                    <Plus size={12} strokeWidth={2.5} />
                 </button>
             </PopoverTrigger>
-            <PopoverContent align="end" sideOffset={8} className="w-[260px] p-3 rounded-xl space-y-2">
+            <PopoverContent align="start" sideOffset={8} className="w-[260px] p-3 rounded-xl space-y-2">
                 <p className="text-[11px] font-semibold flex items-center gap-1.5">
                     <UserPlus size={12} className="text-amber-700" />
                     Ajouter des coordonnées
@@ -186,13 +177,14 @@ function ContactQuickAdd({ onSave, testId }) {
     );
 }
 
-function ProblemAction({ item, onPlanMeeting, onApplyField, onSaveContact, onDismiss }) {
+function ProblemAction({ item, sev = "warning", onPlanMeeting, onApplyField, onSaveContact, onDismiss }) {
     const title = actionTitle(item);
 
     if (item.id === "prospection_sans_tel" || item.id === "nouveau_sans_coord") {
         return (
             <ContactQuickAdd
                 testId={`vigilance-action-${item.id}`}
+                sev={sev}
                 onSave={onSaveContact}
             />
         );
@@ -232,7 +224,7 @@ function ProblemAction({ item, onPlanMeeting, onApplyField, onSaveContact, onDis
                     ? `dismiss-inconsistency-${item.id}`
                     : `vigilance-action-${item.id}`
             }
-            className={ICON_BTN}
+            className={actionBtnClass(sev)}
         >
             <ActionIcon item={item} />
         </button>
@@ -295,27 +287,28 @@ export function VigilanceStrip({
                             data-testid={`lead-inconsistency-${item.id}`}
                         >
                             <span
-                                className={cn("mt-[7px] w-1.5 h-1.5 rounded-full shrink-0", DOT[sev])}
+                                className={cn("mt-[5px] w-1.5 h-1.5 rounded-full shrink-0", DOT[sev])}
                                 aria-hidden
                             />
-                            <div className="flex-1 min-w-0">
-                                <div className={cn("font-semibold text-[12px] leading-7", TITLE[sev])}>
-                                    {item.title}
+                            <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                    <div className={cn("font-semibold text-[12px] leading-5 truncate min-w-0", TITLE[sev])}>
+                                        {item.title}
+                                    </div>
+                                    <ProblemAction
+                                        item={item}
+                                        sev={sev}
+                                        onPlanMeeting={onPlanMeeting}
+                                        onApplyField={onApplyField}
+                                        onSaveContact={onSaveContact}
+                                        onDismiss={onDismiss}
+                                    />
                                 </div>
                                 {item.message && (
-                                    <div className="text-[11px] text-muted-foreground -mt-0.5 line-clamp-2">
+                                    <div className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2 pr-1">
                                         {renderMessageWithDates(item.message)}
                                     </div>
                                 )}
-                            </div>
-                            <div className="w-7 h-7 shrink-0 flex items-center justify-center">
-                                <ProblemAction
-                                    item={item}
-                                    onPlanMeeting={onPlanMeeting}
-                                    onApplyField={onApplyField}
-                                    onSaveContact={onSaveContact}
-                                    onDismiss={onDismiss}
-                                />
                             </div>
                         </li>
                     );
@@ -326,27 +319,28 @@ export function VigilanceStrip({
                         className="flex items-start gap-2 px-2 py-1.5 text-[12.5px] leading-snug rounded-lg border border-transparent"
                         data-testid="lead-calendar-nudge"
                     >
-                        <span className={cn("mt-[7px] w-1.5 h-1.5 rounded-full shrink-0", DOT.violet)} aria-hidden />
-                        <div className="flex-1 min-w-0">
-                            <div className={cn("font-semibold text-[12px] leading-7", TITLE.violet)}>
-                                {nudge.title}
+                        <span className={cn("mt-[5px] w-1.5 h-1.5 rounded-full shrink-0", DOT.violet)} aria-hidden />
+                        <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                                <div className={cn("font-semibold text-[12px] leading-5 truncate min-w-0", TITLE.violet)}>
+                                    {nudge.title}
+                                </div>
+                                <QuickScheduleButton
+                                    company={company}
+                                    defaultLabel={nudge.label}
+                                    hint={nudge.hint}
+                                    size="xs"
+                                    icon="plus"
+                                    testId="lead-watch-schedule-btn"
+                                    onConfirm={onPlanReminder}
+                                    className={actionBtnClass("violet")}
+                                />
                             </div>
                             {nudge.body && (
-                                <div className="text-[11px] text-muted-foreground -mt-0.5 leading-snug line-clamp-2">
+                                <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug line-clamp-2 pr-1">
                                     {nudge.body}
                                 </div>
                             )}
-                        </div>
-                        <div className="w-7 h-7 shrink-0 flex items-center justify-center">
-                            <QuickScheduleButton
-                                company={company}
-                                defaultLabel={nudge.label}
-                                hint={nudge.hint}
-                                size="xs"
-                                testId="lead-watch-schedule-btn"
-                                onConfirm={onPlanReminder}
-                                className={ICON_BTN}
-                            />
                         </div>
                     </li>
                 )}

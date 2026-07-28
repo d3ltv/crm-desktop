@@ -21,6 +21,7 @@ import {
     DialogDescription,
 } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { isRelia2Export } from "@/lib/reliaVariant";
 
 // ---------- Helpers ----------
 function pct(n) {
@@ -515,7 +516,7 @@ const AlertQualityGrid = ({ overdue, noContact, lost, active, onOpenAlert, onFoc
     );
 };
 
-/** Vigilance critique/warning + cabinets + conversion croisée */
+/** Vigilance critique/warning (+ cabinets hors Relia 2) */
 const VigilanceAgencyPanel = ({
     critical,
     warning,
@@ -526,6 +527,7 @@ const VigilanceAgencyPanel = ({
     onFocusCritical,
     onFocusWarning,
     onFocusAgency,
+    hideAgency = false,
 }) => {
     const tiles = [
         {
@@ -542,30 +544,34 @@ const VigilanceAgencyPanel = ({
             tone: warning > 0 ? "danger" : "neutral",
             onClick: warning > 0 ? onFocusWarning : undefined,
         },
-        {
-            key: "agency",
-            label: "Suspects cabinet",
-            value: agencyCount,
-            sub: agencyRate != null ? `${agencyRate.toFixed(0)} % du pipeline` : null,
-            tone: "neutral",
-            onClick: agencyCount > 0 ? onFocusAgency : undefined,
-        },
-        {
-            key: "conv",
-            label: "Conv. cabinet / direct",
-            value:
-                agencyConversion == null && directConversion == null
-                    ? "—"
-                    : `${agencyConversion != null ? agencyConversion.toFixed(0) : "—"} / ${directConversion != null ? directConversion.toFixed(0) : "—"} %`,
-            sub: "Taux gagné parmi chaque groupe",
-            tone: "neutral",
-        },
+        ...(!hideAgency
+            ? [
+                {
+                    key: "agency",
+                    label: "Suspects cabinet",
+                    value: agencyCount,
+                    sub: agencyRate != null ? `${agencyRate.toFixed(0)} % du pipeline` : null,
+                    tone: "neutral",
+                    onClick: agencyCount > 0 ? onFocusAgency : undefined,
+                },
+                {
+                    key: "conv",
+                    label: "Conv. cabinet / direct",
+                    value:
+                        agencyConversion == null && directConversion == null
+                            ? "—"
+                            : `${agencyConversion != null ? agencyConversion.toFixed(0) : "—"} / ${directConversion != null ? directConversion.toFixed(0) : "—"} %`,
+                    sub: "Taux gagné parmi chaque groupe",
+                    tone: "neutral",
+                },
+            ]
+            : []),
     ];
 
     return (
         <div data-testid="stats-vigilance-agency">
-            <PanelLabel>Vigilance & cabinets</PanelLabel>
-            <div className="grid grid-cols-2 gap-2.5">
+            <PanelLabel>{hideAgency ? "Vigilance" : "Vigilance & cabinets"}</PanelLabel>
+            <div className={`grid gap-2.5 ${tiles.length <= 2 ? "grid-cols-2" : "grid-cols-2"}`}>
                 {tiles.map((t) => {
                     const Comp = t.onClick ? "button" : "div";
                     return (
@@ -1230,6 +1236,7 @@ export const StatsDashboard = ({ alertRequest = null, onAlertRequestHandled }) =
                             agencyRate={current.agencyRate}
                             agencyConversion={current.agencyConversionRate}
                             directConversion={current.directConversionRate}
+                            hideAgency={isRelia2Export}
                             onFocusCritical={() => {
                                 const target = pickWsByStat("vigilanceCriticalCount");
                                 if (target?.stats.vigilanceCriticalCount > 0) {

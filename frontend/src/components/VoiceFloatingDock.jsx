@@ -30,13 +30,15 @@ export function VoiceFloatingDock({
     onStop,
     onDiscard,
     onOpenLead,
+    onAttachPrompt,
     label = "Appel",
     saving = false,
     busyLabel = "",
+    needsAttach = false,
     className = "",
 }) {
     const [confirmDiscard, setConfirmDiscard] = useState(false);
-    const pipelineRunning = saving || !!busyLabel;
+    const pipelineRunning = saving || (!!busyLabel && !needsAttach);
 
     useEffect(() => {
         if (!open) return undefined;
@@ -152,7 +154,7 @@ export function VoiceFloatingDock({
                         </p>
                     </div>
 
-                    {onOpenLead && (
+                    {onOpenLead && !needsAttach && (
                         <button
                             type="button"
                             onClick={onOpenLead}
@@ -165,7 +167,18 @@ export function VoiceFloatingDock({
                         </button>
                     )}
 
-                    {isReady && (
+                    {needsAttach && (
+                        <button
+                            type="button"
+                            onClick={onAttachPrompt || onOpenLead}
+                            className="h-8 px-2.5 shrink-0 rounded-full bg-primary text-primary-foreground text-[11px] font-medium"
+                            data-testid="voice-dock-attach"
+                        >
+                            Rattacher
+                        </button>
+                    )}
+
+                    {isReady && !needsAttach && (
                         <span className="h-8 px-2.5 shrink-0 rounded-full bg-primary/10 text-primary text-[11px] font-medium inline-flex items-center gap-1.5">
                             {pipelineRunning ? (
                                 <>

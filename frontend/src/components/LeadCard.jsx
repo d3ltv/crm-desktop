@@ -42,6 +42,7 @@ import {
     isAgencyDetectionEnabled,
 } from "@/lib/agencyDetection";
 import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
+import { openExternal, isExternalHref } from "@/lib/openExternal";
 
 /* ── Tag colors ───────────────────────────────────────────────── */
 const TAG_HUES = [
@@ -103,22 +104,40 @@ const CopyBtn = ({ value }) => {
     );
 };
 
+/* ── Lien carte : ouverture OS directe, sans friction DnD ──────── */
+const CardLink = ({ href, children, className = "", title }) => {
+    if (!href) return <span className={className}>{children}</span>;
+    return (
+        <button
+            type="button"
+            data-no-open
+            title={title || href}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (isExternalHref(href)) openExternal(href);
+                else {
+                    try { window.open(href, "_blank", "noopener,noreferrer"); } catch { /* ignore */ }
+                }
+            }}
+            className={`text-left bg-transparent border-0 p-0 cursor-pointer ${className}`}
+        >
+            {children}
+        </button>
+    );
+};
+
 /* ── External link (inline, always visible for URLs) ──────────── */
 const LinkBtn = ({ href, label }) => (
-    <a
+    <CardLink
         href={href}
-        target="_blank"
-        rel="noreferrer noopener"
-        draggable={false}
-        onClick={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        onDragStart={(e) => e.preventDefault()}
         title={label}
         className="inline-flex items-center gap-0.5 text-primary hover:underline font-normal"
     >
         {label}
         <ExternalLink size={9} strokeWidth={2} className="ml-0.5 opacity-60 shrink-0" />
-    </a>
+    </CardLink>
 );
 
 /* ── Move-column popover ──────────────────────────────────────── */
@@ -129,8 +148,22 @@ const MoveColumnButton = ({ lead, workspace, currentColumnId, dispatch, onOpenCh
         .map((cid) => workspace.columns[cid])
         .filter(Boolean);
     const moveTo = (targetColumnId) => {
+        const fromColumnId = currentColumnId;
+        const fromName = workspace.columns[currentColumnId]?.name ?? "";
         const targetName = workspace.columns[targetColumnId]?.name ?? "";
         dispatch({ type: "MOVE_LEAD_ORDERED", workspaceId: workspace.id, leadId: lead.id, toColumnId: targetColumnId, toIndex: null });
+        try {
+            window.dispatchEvent(new CustomEvent("relia:lead-moved", {
+                detail: {
+                    workspaceId: workspace.id,
+                    leadId: lead.id,
+                    fromColumnId,
+                    toColumnId: targetColumnId,
+                    fromName,
+                    toName: targetName,
+                },
+            }));
+        } catch { /* ignore */ }
         toast.success(`Déplacé vers « ${targetName} »`, { description: lead.company });
         setOpen(false);
         onOpenChange?.(false);
@@ -239,7 +272,7 @@ function detectHref(v) {
    MAIN CARD — fidèle à la maquette
    ══════════════════════════════════════════════════════════════ */
 export const LeadCard = memo(({
-    lead, column, workspace, onOpen, onDragStart, onDragEnd, dragging, quickFocused,
+    lead, column, workspace, onOpen, onPointerDownLead, dragging, quickFocused,
 }) => {
     const { dispatch } = useCrm();
     const visible = getVisibleSet(workspace.cardFields);
@@ -361,11 +394,9 @@ export const LeadCard = memo(({
         return (
             <div className="group/row flex items-baseline gap-0 leading-snug">
                 {href ? (
-                    <a href={href} target="_blank" rel="noreferrer noopener" draggable={false}
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-primary hover:underline text-[12.5px] break-all">
+                    <CardLink href={href} className="text-primary hover:underline text-[12.5px] break-all">
                         {value}
-                    </a>
+                    </CardLink>
                 ) : (
                     <span className="text-[12.5px] text-foreground/80 break-words">{value}</span>
                 )}
@@ -384,11 +415,9 @@ export const LeadCard = memo(({
                     <React.Fragment key={i}>
                         {i > 0 && <span className="text-muted-foreground/40 text-[12px]">,</span>}
                         {href ? (
-                            <a href={href} target="_blank" rel="noreferrer noopener" draggable={false}
-                                onClick={(e) => e.stopPropagation()}
-                                className="text-primary hover:underline text-[12.5px]">
+                            <CardLink href={href} className="text-primary hover:underline text-[12.5px]">
                                 {label}
-                            </a>
+                            </CardLink>
                         ) : (
                             <span className="text-[12.5px] text-foreground/80">{label}</span>
                         )}
@@ -411,23 +440,25 @@ export const LeadCard = memo(({
             // ── Champ fixe : phone ──────────────────────────────────────────
             if (key === "phone") {
                 if (lead.phone) {
+                    const tel = `tel:${String(lead.phone).replace(/[^+\d]/g, "")}`;
                     rows.push(
                         <div key="phone" className="group/row flex items-baseline gap-0">
-                            <span className="text-[12.5px] text-foreground/80">{lead.phone}</span>
+                            <CardLink href={tel} className="text-[12.5px] text-foreground/80 hover:text-primary">
+                                {lead.phone}
+                            </CardLink>
                             <CopyBtn value={lead.phone} />
                         </div>
                     );
                 }
-                // Injecter les doublons cf:Téléphone N s'ils sont juste après dans fieldOrder
-                // (gérés ci-dessous par le cas cf:)
             }
             // ── Champ fixe : email ──────────────────────────────────────────
             else if (key === "email") {
                 if (lead.email) {
                     rows.push(
                         <div key="email" className="group/row flex items-baseline gap-0 min-w-0">
-                            <a href={`mailto:${lead.email}`} onClick={(e) => e.stopPropagation()}
-                                className="text-primary hover:underline text-[12.5px] truncate min-w-0">{lead.email}</a>
+                            <CardLink href={`mailto:${lead.email}`} className="text-primary hover:underline text-[12.5px] truncate min-w-0">
+                                {lead.email}
+                            </CardLink>
                             <CopyBtn value={lead.email} />
                         </div>
                     );
@@ -439,9 +470,9 @@ export const LeadCard = memo(({
                     const href = detectHref(lead.website) ?? `https://${lead.website}`;
                     rows.push(
                         <div key="website" className="group/row flex items-baseline gap-0 min-w-0">
-                            <a href={href} target="_blank" rel="noreferrer noopener" draggable={false}
-                                onClick={(e) => e.stopPropagation()}
-                                className="text-primary hover:underline text-[12.5px] truncate min-w-0">{lead.website}</a>
+                            <CardLink href={href} className="text-primary hover:underline text-[12.5px] truncate min-w-0">
+                                {lead.website}
+                            </CardLink>
                             <CopyBtn value={lead.website} />
                         </div>
                     );
@@ -469,7 +500,7 @@ export const LeadCard = memo(({
                     rows.push(
                         <div key={key} className="group/row flex items-baseline gap-0 min-w-0">
                             {href
-                                ? <a href={href} target="_blank" rel="noreferrer noopener" draggable={false} onClick={(e) => e.stopPropagation()} className="text-primary hover:underline text-[12.5px] truncate min-w-0">{v}</a>
+                                ? <CardLink href={href} className="text-primary hover:underline text-[12.5px] truncate min-w-0">{v}</CardLink>
                                 : <span className="text-[12.5px] text-foreground/80 truncate min-w-0">{v}</span>
                             }
                             <CopyBtn value={String(v)} />
@@ -488,17 +519,11 @@ export const LeadCard = memo(({
                     rows.push(
                         <div key={key} className="group/row flex items-baseline gap-0 min-w-0">
                             {href ? (
-                                <a href={href} target="_blank" rel="noreferrer noopener" draggable={false}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="text-primary hover:underline text-[12.5px] truncate min-w-0">{cf.value}</a>
+                                <CardLink href={href} className="text-primary hover:underline text-[12.5px] truncate min-w-0">{cf.value}</CardLink>
                             ) : isPhone ? (
-                                <a href={`tel:${cf.value.replace(/[^+\d]/g, "")}`}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="text-[12.5px] text-foreground/80 truncate min-w-0">{cf.value}</a>
+                                <CardLink href={`tel:${cf.value.replace(/[^+\d]/g, "")}`} className="text-[12.5px] text-foreground/80 truncate min-w-0">{cf.value}</CardLink>
                             ) : isEmail ? (
-                                <a href={`mailto:${cf.value}`}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="text-primary hover:underline text-[12.5px] truncate min-w-0">{cf.value}</a>
+                                <CardLink href={`mailto:${cf.value}`} className="text-primary hover:underline text-[12.5px] truncate min-w-0">{cf.value}</CardLink>
                             ) : (
                                 <span className="text-[12.5px] text-foreground/80 truncate min-w-0">{cf.value}</span>
                             )}
@@ -518,14 +543,12 @@ export const LeadCard = memo(({
     return (
         <div
             data-testid={`lead-card-${lead.id}`}
-            draggable
-            onDragStart={(e) => onDragStart(e, lead)}
-            onDragEnd={onDragEnd}
+            onPointerDown={(e) => onPointerDownLead?.(e, lead)}
             onClick={(e) => {
                 if (e.target.closest("a, button, input, textarea, [data-no-open]")) return;
                 onOpen(lead);
             }}
-            className={`lead-card ${dragging ? "dragging" : ""} ${hasGlow ? "card-glow" : ""} ${rdvSideColor ? "rdv-side" : ""} ${rdv && rdvIsSoon && !rdvIsPast ? "rdv-soon" : ""} ${quickFocused ? "quick-focused" : ""} ${reminderOpen || moveOpen ? "actions-open" : ""} ${isStale && !rdv ? "card-stale" : ""} relative cursor-grab active:cursor-grabbing mb-1.5`}
+            className={`lead-card ${dragging ? "dragging" : ""} ${hasGlow ? "card-glow" : ""} ${rdvSideColor ? "rdv-side" : ""} ${rdv && rdvIsSoon && !rdvIsPast ? "rdv-soon" : ""} ${quickFocused ? "quick-focused" : ""} ${reminderOpen || moveOpen ? "actions-open" : ""} ${isStale && !rdv ? "card-stale" : ""} relative cursor-grab active:cursor-grabbing mb-1.5 touch-none`}
             style={{
                 "--col-lisere": colColor.lisere || colColor.accentBar,
                 ...(glowColor ? { "--card-glow": glowColor } : {}),

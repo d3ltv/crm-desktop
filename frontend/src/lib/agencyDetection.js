@@ -1,21 +1,20 @@
 /**
  * Détection locale des cabinets de recrutement / agences d'intérim.
  * Matching par mots-clés uniquement — pas d'API, pas de LLM.
+ * Désactivée entièrement sur la build Relia 2 (`isRelia2Export`).
+ *
+ * Exige un signal net (phrase métier ou 2 matches) pour limiter les faux positifs.
  */
 
-/** Seuil d'affichage du signal (0–100). */
-export const AGENCY_SCORE_THRESHOLD = 30;
+import { isRelia2Export } from "@/lib/reliaVariant";
 
-/** Points par mot-clé trouvé dans le nom d'entreprise. */
+/** Seuil d'affichage (0–100) — un seul token faible ne suffit plus. */
+export const AGENCY_SCORE_THRESHOLD = 50;
+
 const WEIGHT_COMPANY = 40;
-
-/** Points par mot-clé trouvé dans un champ extra « secteur-like ». */
 const WEIGHT_SECTOR = 20;
 
-/**
- * Expressions multi-mots (sous-chaîne après normalisation).
- * Les accents sont déjà stripés au matching.
- */
+/** Phrases métier nettes (sous-chaîne après normalisation). */
 const PHRASE_KEYWORDS = [
     "ressources humaines",
     "chasseur de tetes",
@@ -27,17 +26,18 @@ const PHRASE_KEYWORDS = [
     "agence interim",
     "cabinet de recrutement",
     "cabinet recrutement",
-    "recrutement",
-    "interim",
+    "agence de recrutement",
+    "societe de recrutement",
+    "cabinet interim",
     "staffing",
-    "talents",
-    "carrieres",
 ];
 
-/** Tokens courts — matching avec limites de mot uniquement. */
-const SHORT_KEYWORDS = ["rh", "hr"];
+/** Tokens courts — ne comptent que s’il y a déjà un autre match, ou avec secteur. */
+const SHORT_KEYWORDS = ["interim"];
 
-/** Clés extra considérées comme secteur / description. */
+/** Trop larges pour un match solo. */
+const WEAK_SOLO = new Set(["rh", "hr"]);
+
 const SECTOR_KEY_RE =
     /secteur|industrie|activite|description|naf|ape|metier|domaine|branche|categorie/i;
 
@@ -62,8 +62,7 @@ function findMatches(text) {
     for (const phrase of PHRASE_KEYWORDS) {
         if (norm.includes(phrase)) found.push(phrase);
     }
-    for (const token of SHORT_KEYWORDS) {
-        // Évite le double comptage si un phrase match couvre déjà le token
+    for (const token of [...SHORT_KEYWORDS, ...WEAK_SOLO]) {
         if (found.some((p) => p === token || p.includes(` ${token}`) || p.includes(`${token} `) || p.startsWith(`${token} `) || p.endsWith(` ${token}`))) {
             continue;
         }
@@ -98,14 +97,27 @@ export function scoreAgencySuspicion(lead) {
 
     const companyPts = companyMatches.length * WEIGHT_COMPANY;
     const sectorPts = sectorMatches.length * WEIGHT_SECTOR;
-    const score = Math.min(100, companyPts + sectorPts);
+    let score = Math.min(100, companyPts + sectorPts);
 
     const matches = [...new Set([...companyMatches, ...sectorMatches])];
+    const strongCompany = companyMatches.some((m) => !WEAK_SOLO.has(m));
+    const signalCount = matches.filter((m) => !WEAK_SOLO.has(m)).length
+        + (WEAK_SOLO.has(matches[0]) && sectorMatches.length ? 1 : 0);
+
+    // Un seul « RH » / « HR » sans autre signal → ignorer
+    if (!strongCompany && sectorMatches.length === 0) {
+        score = 0;
+    } else if (signalCount < 1 && companyMatches.every((m) => WEAK_SOLO.has(m))) {
+        score = 0;
+    } else if (matches.length === 1 && WEAK_SOLO.has(matches[0]) && sectorMatches.length === 0) {
+        score = 0;
+    }
+
     return { score, matches, companyMatches, sectorMatches };
 }
 
-/** Défaut ON : undefined / null → activé. */
 export function isAgencyDetectionEnabled(workspace) {
+    if (isRelia2Export) return false;
     return workspace?.agencyDetectionEnabled !== false;
 }
 
@@ -116,6 +128,10 @@ export function getAgencySuspicion(lead, enabled) {
     if (!enabled) return null;
     const result = scoreAgencySuspicion(lead);
     if (result.score < AGENCY_SCORE_THRESHOLD) return null;
+    // Exiger au moins une phrase / interim, ou company + secteur
+    const strong = result.companyMatches.some((m) => !WEAK_SOLO.has(m));
+    const dual = result.companyMatches.length >= 1 && result.sectorMatches.length >= 1;
+    if (!strong && !dual) return null;
     return {
         score: result.score,
         matches: result.matches,
@@ -123,10 +139,6 @@ export function getAgencySuspicion(lead, enabled) {
     };
 }
 
-/**
- * Filtre live « cabinet » / « suspect cabinet » — null si le terme n’est pas un filtre agency.
- * @returns {boolean|null}
- */
 export function matchAgencyFilterTerm(term, lead, enabled) {
     const t = String(term || "")
         .toLowerCase()

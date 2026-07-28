@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Loader2, Type } from "lucide-react";
+import { Copy, Check, Loader2, Type } from "lucide-react";
 import {
     getCallRecording,
     downloadCallRecording,
@@ -12,6 +12,7 @@ import { transcribeAudioBlob, isTranscribeSupported } from "@/lib/transcribeLoca
 import { applySafeTranscriptFields, offerDetectedAppointment } from "@/lib/transcriptSideEffects";
 import { useCrm } from "@/context/CrmContext";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -57,6 +58,7 @@ export function CallRecordingPlayer({
     const [transcribing, setTranscribing] = useState(false);
     const [progressMsg, setProgressMsg] = useState("");
     const [transcriptExpanded, setTranscriptExpanded] = useState(false);
+    const [copied, setCopied] = useState(false);
     const [localTranscript, setLocalTranscript] = useState(() =>
         extractVoiceTranscript(noteText, transcriptProp)
     );
@@ -211,6 +213,19 @@ export function CallRecordingPlayer({
         }
     };
 
+    const handleCopyTranscript = async () => {
+        const text = String(localTranscript || "").trim();
+        if (!text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopied(true);
+            toast.success("Transcription copiée");
+            window.setTimeout(() => setCopied(false), 1600);
+        } catch {
+            toast.error("Copie impossible");
+        }
+    };
+
     const confirmDialog = (
         <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
             <AlertDialogContent className="rounded-2xl max-w-sm" data-testid="call-delete-dialog">
@@ -294,12 +309,31 @@ export function CallRecordingPlayer({
                         : transcript;
                     return (
                         <div className="space-y-0.5 px-0.5 pt-0.5">
-                            <p
-                                className="text-[12px] text-foreground/90 leading-relaxed whitespace-pre-wrap"
-                                data-testid={`voice-transcript-${recordingId}`}
-                            >
-                                {preview}
-                            </p>
+                            <div className="flex items-start gap-1.5">
+                                <p
+                                    className="flex-1 min-w-0 text-[12px] text-foreground/90 leading-relaxed whitespace-pre-wrap"
+                                    data-testid={`voice-transcript-${recordingId}`}
+                                >
+                                    {preview}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={handleCopyTranscript}
+                                    title="Copier la transcription"
+                                    aria-label="Copier la transcription"
+                                    data-testid={`voice-transcript-copy-${recordingId}`}
+                                    className={cn(
+                                        "shrink-0 h-7 w-7 rounded-md inline-flex items-center justify-center",
+                                        "text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors"
+                                    )}
+                                >
+                                    {copied ? (
+                                        <Check size={13} className="text-primary" strokeWidth={2} />
+                                    ) : (
+                                        <Copy size={13} strokeWidth={1.75} />
+                                    )}
+                                </button>
+                            </div>
                             {collapsed && (
                                 <button
                                     type="button"

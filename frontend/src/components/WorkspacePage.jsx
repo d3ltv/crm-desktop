@@ -26,6 +26,20 @@ import { resolvePipelineColumnId } from "@/lib/pipelineRoles";
 import { isManualRdv } from "@/lib/nextActionUtils";
 import { PENDING_LEAD_EVENT } from "@/lib/calendarEvents";
 import { trackViewChange, trackLeadOpen } from "@/lib/usageMemory";
+import {
+    RELIA_EVENTS,
+    dispatchRelia,
+    requestQuickModeToggle,
+    isTypingTarget,
+    isWorkspaceSearchInput,
+    matchesLetterKey,
+    isAltOnly,
+    isCtrlAltOnly,
+    isModOnly,
+    isModShiftOnly,
+    isSpaceKey,
+} from "@/lib/reliaShortcuts";
+import { toast } from "sonner";
 
 export const WorkspacePage = () => {
     const { state, dispatch, restoreEpoch } = useCrm();
@@ -33,8 +47,10 @@ export const WorkspacePage = () => {
     const [filter, setFilter] = useState("");
     const [activeFilters, setActiveFilters] = useState([]);
     const [openLeadId, setOpenLeadId] = useState(null);
+    const [boardFocusedLeadId, setBoardFocusedLeadId] = useState(null);
     const openLeadById = (leadId) => {
         setOpenLeadId(leadId);
+        if (leadId) setBoardFocusedLeadId(leadId);
         if (leadId && workspace?.id) {
             trackLeadOpen(workspace.id, leadId, workspace.name);
         }
@@ -98,25 +114,174 @@ export const WorkspacePage = () => {
     // → on supprime l'ouverture de MeetingModal et d'un 2e CallNoteModal pour ces leads
     const suppressModalForLeadRef = useRef(new Set());
 
+    const onNewLead = (columnId) => {
+        if (!workspace) return;
+        const col = columnId || workspace.columnOrder[0];
+        prevLeadIdsRef.current = new Set(Object.keys(workspace.leads));
+        setPendingOpenColumnId(col);
+        dispatch({
+            type: "ADD_LEAD",
+            workspaceId: workspace.id,
+            columnId: col,
+            lead: { company: "Nouveau lead" },
+        });
+    };
+
     useEffect(() => {
         prevColumnsRef.current = {};
         setQuickMode(false);
         setQuickCount(0);
+        setBoardFocusedLeadId(null);
     }, [state.currentId]);
 
-    // ⌘\ / Ctrl+\ — replier / déplier la sidebar
+    // Hub raccourcis clavier (phase capture — avant inputs / OS webview)
     useEffect(() => {
         const onKey = (e) => {
-            const isMac = navigator.platform.toUpperCase().includes("MAC");
-            const mod = isMac ? e.metaKey : e.ctrlKey;
-            if (mod && (e.key === "\\" || e.code === "Backslash")) {
+            if (e.repeat) return;
+
+            // ── Toujours actifs (même dans un champ, sauf exceptions) ─────────
+
+            // ⌘F / ⌘K — ouvrir OU fermer la recherche
+            if (isModOnly(e) && (matchesLetterKey(e, "f") || matchesLetterKey(e, "k"))) {
                 e.preventDefault();
+                e.stopPropagation();
+                dispatchRelia(RELIA_EVENTS.TOGGLE_SEARCH);
+                return;
+            }
+
+            // ⌘: — afficher / masquer la barre latérale
+            // (: = Shift+; QWERTY · Shift+. AZERTY — e.key === ':' couvre les deux)
+            if (
+                (e.metaKey || e.ctrlKey)
+                && !e.altKey
+                && (
+                    e.key === ":"
+                    || (e.shiftKey && (e.code === "Semicolon" || e.code === "Period"))
+                )
+            ) {
+                e.preventDefault();
+                e.stopPropagation();
                 toggleSidebar();
+                return;
+            }
+
+            // ⌥H — retour à l’accueil (tous les espaces) — pas ⌘H (masque l’app macOS)
+            if (isAltOnly(e) && matchesLetterKey(e, "h")) {
+                if (isTypingTarget() && !isWorkspaceSearchInput()) return;
+                e.preventDefault();
+                e.stopPropagation();
+                dispatch({ type: "SELECT_WORKSPACE", id: null });
+                return;
+            }
+
+            // Mode rapide : ⌃⌥Espace (souvent volé par macOS) + secours ⌘⇧E
+            const quickChord =
+                (isCtrlAltOnly(e) && isSpaceKey(e))
+                || (isModShiftOnly(e) && matchesLetterKey(e, "e"));
+            if (quickChord) {
+                if (isTypingTarget() && !isWorkspaceSearchInput()) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (view !== "kanban") {
+                    handleViewChange("kanban");
+                    toast.message("Mode rapide", {
+                        description: "Vue Kanban activée.",
+                        duration: 1800,
+                    });
+                }
+                // Flag + event : si le board n’est pas encore monté, il consommera au mount
+                requestQuickModeToggle();
+                return;
+            }
+
+            // Appel libre : ⌥A + secours ⌘⇧A (⌥A parfois mangé / AZERTY)
+            const freeCallChord =
+                (isAltOnly(e) && matchesLetterKey(e, "a"))
+                || (isModShiftOnly(e) && matchesLetterKey(e, "a"));
+            if (freeCallChord) {
+                if (isTypingTarget()) return;
+                e.preventDefault();
+                e.stopPropagation();
+                dispatchRelia(RELIA_EVENTS.TOGGLE_FREE_CALL);
+                return;
+            }
+
+            // Esc / ⌘. — fermer fiche
+            if (
+                e.key === "Escape"
+                || (isModOnly(e) && (e.key === "." || e.code === "Period"))
+            ) {
+                if ((e.key === "." || e.code === "Period") && isTypingTarget()) return;
+                if (document.body.getAttribute("data-voice-dock") === "ready") return;
+                if (document.querySelector('[data-testid="attach-call-lead-dialog"]')) return;
+                if (document.querySelector('[data-testid="call-note-modal"]')) return;
+                if (openLeadId) {
+                    e.preventDefault();
+                    setOpenLeadId(null);
+                }
+                return;
+            }
+
+            if (isTypingTarget()) return;
+
+            // ⌘N — nouveau prospect
+            if (isModOnly(e) && matchesLetterKey(e, "n")) {
+                e.preventDefault();
+                onNewLead();
+                return;
+            }
+
+            // ⌘⇧N — focus nouvelle note
+            if (isModShiftOnly(e) && matchesLetterKey(e, "n")) {
+                e.preventDefault();
+                if (openLeadId) dispatchRelia(RELIA_EVENTS.FOCUS_NEW_NOTE);
+                return;
+            }
+
+            // ⌘1…6 — colonne N
+            if (isModOnly(e) && /^Digit[1-6]$/.test(e.code)) {
+                e.preventDefault();
+                const idx = Number(e.code.slice(5)) - 1;
+                const colId = workspace?.columnOrder?.[idx];
+                if (!colId) return;
+                const el = document.querySelector(`[data-testid="kanban-column-${colId}"]`);
+                el?.scrollIntoView?.({ inline: "center", block: "nearest", behavior: "smooth" });
+                el?.classList?.add("ring-2", "ring-primary/40");
+                window.setTimeout(() => el?.classList?.remove("ring-2", "ring-primary/40"), 900);
+                return;
+            }
+
+            // ⌃⌥C — calendrier (+ secours ⌘⇧C)
+            if (
+                (isCtrlAltOnly(e) && matchesLetterKey(e, "c"))
+                || (isModShiftOnly(e) && matchesLetterKey(e, "c"))
+            ) {
+                e.preventDefault();
+                dispatchRelia(RELIA_EVENTS.OPEN_CALENDAR);
+                return;
+            }
+
+            // ⌥R — relance sur fiche ouverte
+            if (isAltOnly(e) && matchesLetterKey(e, "r")) {
+                e.preventDefault();
+                if (openLeadId) dispatchRelia(RELIA_EVENTS.OPEN_RELANCE);
+                return;
+            }
+
+            // Espace — ouvrir/fermer lead focusé (hors mode rapide)
+            if (isSpaceKey(e) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                if (quickMode) return;
+                if (!boardFocusedLeadId) return;
+                e.preventDefault();
+                if (openLeadId === boardFocusedLeadId) setOpenLeadId(null);
+                else openLeadById(boardFocusedLeadId);
             }
         };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, [sidebarOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openLeadId, boardFocusedLeadId, quickMode, workspace?.columnOrder, workspace?.id, view, sidebarOpen]);
 
     // Appliquer la densité sur le document (CSS)
     useEffect(() => {
@@ -268,18 +433,6 @@ export const WorkspacePage = () => {
         state.workspaces[state.currentId]?.leads[lostLeadId] || null;
     const meetingLead =
         state.workspaces[state.currentId]?.leads[meetingLeadId] || null;
-
-    const onNewLead = (columnId) => {
-        const col = columnId || workspace.columnOrder[0];
-        prevLeadIdsRef.current = new Set(Object.keys(workspace.leads));
-        setPendingOpenColumnId(col);
-        dispatch({
-            type: "ADD_LEAD",
-            workspaceId: workspace.id,
-            columnId: col,
-            lead: { company: "Nouveau lead" },
-        });
-    };
 
     const leadCount = Object.keys(workspace.leads).length;
 

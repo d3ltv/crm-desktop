@@ -69,7 +69,8 @@
     "test": "craco test",
     "tauri": "tauri",
     "desktop": "tauri dev",
-    "desktop:build": "DISABLE_ESLINT_PLUGIN=true CI=false tauri build"
+    "desktop:build": "DISABLE_ESLINT_PLUGIN=true CI=false tauri build",
+    "desktop:build:relia2": "REACT_APP_RELIA_VARIANT=relia2 DISABLE_ESLINT_PLUGIN=true CI=false tauri build"
   },
   "browserslist": {
     "production": [

@@ -408,6 +408,7 @@ export function QuickScheduleButton({
     onConfirm,
     className,
     size = "sm",
+    icon = "calendar",
     testId = "quick-schedule-btn",
     open: controlledOpen,
     onOpenChange,
@@ -416,7 +417,9 @@ export function QuickScheduleButton({
     const open = controlledOpen ?? uncontrolledOpen;
     const setOpen = onOpenChange ?? setUncontrolledOpen;
 
-    const dim = size === "xs" ? "h-7 w-7" : "h-8 w-8";
+    const dim = size === "xs" ? "h-5 w-5 rounded-md" : "h-8 w-8 rounded-lg";
+    const iconSize = size === "xs" ? 12 : 15;
+    const Icon = icon === "plus" ? Plus : CalendarPlus;
 
     return (
         <Popover open={open} onOpenChange={setOpen}>
@@ -428,14 +431,14 @@ export function QuickScheduleButton({
                     aria-label="Rappel calendrier"
                     onClick={(e) => e.stopPropagation()}
                     className={cn(
-                        "inline-flex items-center justify-center rounded-lg border transition-colors shrink-0",
+                        "inline-flex items-center justify-center border transition-colors shrink-0",
                         "border-border bg-background text-muted-foreground",
                         "hover:text-foreground hover:bg-muted/60",
                         dim,
                         className
                     )}
                 >
-                    <CalendarPlus size={size === "xs" ? 13 : 15} strokeWidth={2} />
+                    <Icon size={iconSize} strokeWidth={icon === "plus" ? 2.5 : (size === "xs" ? 2.25 : 2)} />
                 </button>
             </PopoverTrigger>
             <PopoverContent

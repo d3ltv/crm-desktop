@@ -23,6 +23,7 @@ import {
     startMorningRecoScheduler,
     stopMorningRecoScheduler,
 } from "@/lib/desktopNotifications";
+import { mergeImportedState } from "@/lib/mergeImportedState";
 import {
     trackCrmAction,
     flushUsageMemory,
@@ -199,6 +200,7 @@ const makeWorkspace = (name, sector = "", template = "crm") => {
         cardFields: tpl.cardFields,
         columnWidth: 340,
         cardScale: 1,
+        panelInfoLayout: "classic", // "classic" | "rows" — style fiche prospect ouverte
         agencyDetectionEnabled: true,
         pipelineRoles,
         createdAt: new Date().toISOString(),
@@ -298,6 +300,11 @@ function parsePersistedState(raw) {
                 let ws = parsed.workspaces[id];
                 if (ws.columnWidth === undefined) ws.columnWidth = 340;
                 if (ws.cardScale === undefined) ws.cardScale = 1;
+                // Migration : ancien cardLayout "rows"|"compact" → panelInfoLayout
+                if (ws.panelInfoLayout !== "rows" && ws.panelInfoLayout !== "classic") {
+                    ws.panelInfoLayout = ws.cardLayout === "rows" ? "rows" : "classic";
+                }
+                if (ws.cardLayout !== undefined) delete ws.cardLayout;
                 ws = migrateWorkspacePipeline(ws);
                 parsed.workspaces[id] = ws;
             });
@@ -1785,6 +1792,13 @@ function reducer(state, action) {
             const s = Math.min(1, Math.max(0.7, action.scale));
             return updateWs(state, ws.id, { cardScale: s });
         }
+        case "SET_PANEL_INFO_LAYOUT": {
+            // action.workspaceId, action.layout ("classic" | "rows")
+            const ws = state.workspaces[action.workspaceId];
+            if (!ws) return state;
+            const layout = action.layout === "rows" ? "rows" : "classic";
+            return updateWs(state, ws.id, { panelInfoLayout: layout });
+        }
         case "SET_DEAL_VALUE": {
             // action.workspaceId, action.leadId, action.value (number | null)
             const ws = state.workspaces[action.workspaceId];
@@ -2218,16 +2232,17 @@ export function CrmProvider({ children }) {
                 !e.metaKey &&
                 !e.ctrlKey &&
                 !e.shiftKey &&
-                /^Digit[1-9]$/.test(e.code)
+                (/^Digit[1-9]$/.test(e.code) || /^Numpad[1-9]$/.test(e.code))
             ) {
                 if (isTypingTarget()) return;
-                const index = Number(e.code.slice(5)) - 1;
+                const index = Number(e.code.replace(/^(Digit|Numpad)/, "")) - 1;
                 const order = workspaceOrderFromSidebar(
                     ensureSidebar(stateRef.current),
                 );
                 const id = order[index];
                 if (!id) return;
                 e.preventDefault();
+                e.stopPropagation();
                 if (stateRef.current.currentId !== id) {
                     dispatch({ type: "SELECT_WORKSPACE", id });
                 }
@@ -2260,8 +2275,8 @@ export function CrmProvider({ children }) {
                 }
             }
         };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
     }, [undo, redo, dispatch]);
 
     // Persist — debounce 500ms. Desktop → fichier disque.
@@ -2395,16 +2410,56 @@ export function CrmProvider({ children }) {
                 try {
                     const parsed = JSON.parse(jsonString);
                     if (!parsed || !parsed.workspaces) throw new Error("Format invalide");
+
+                    const {
+                        state: merged,
+                        addedWorkspaces,
+                        addedLeads,
+                        addedEvents,
+                        skipped,
+                    } = mergeImportedState(stateRef.current, parsed);
+
                     undoStackRef.current = [];
                     redoStackRef.current = [];
-                    rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: parsed });
+                    rawDispatch({ type: "RESTORE_SNAPSHOT", snapshot: merged });
                     setRestoreEpoch((n) => n + 1);
-                    // Flush immédiat disque
-                    void saveState({ ...parsed, lastDeleted: null });
-                    import("sonner").then(({ toast }) =>
-                        toast.success("Backup Relia restauré", { duration: 3000 })
-                    );
-                } catch {
+                    // Flush immédiat disque — state fusionné (pas l’import brut)
+                    void saveState({ ...merged, lastDeleted: null }).then(() => {
+                        // Recalcul notifs / conseils sur les nouvelles données
+                        pushDesktopFollowupNotifications(merged).catch(() => {});
+                    });
+
+                    import("sonner").then(({ toast }) => {
+                        if (skipped) {
+                            toast.message("Rien à importer", {
+                                description: "Le fichier ne contient pas de nouveaux espaces.",
+                                duration: 3500,
+                            });
+                            return;
+                        }
+                        const bits = [];
+                        if (addedWorkspaces) {
+                            bits.push(
+                                `${addedWorkspaces} espace${addedWorkspaces > 1 ? "s" : ""}`
+                            );
+                        }
+                        if (addedLeads) {
+                            bits.push(
+                                `${addedLeads} lead${addedLeads > 1 ? "s" : ""}`
+                            );
+                        }
+                        if (addedEvents) {
+                            bits.push(
+                                `${addedEvents} événement${addedEvents > 1 ? "s" : ""}`
+                            );
+                        }
+                        toast.success("Import ajouté (sans écraser)", {
+                            description: bits.join(" · ") || "Données fusionnées",
+                            duration: 4000,
+                        });
+                    });
+                } catch (err) {
+                    console.error("[Relia] Import JSON :", err);
                     import("sonner").then(({ toast }) =>
                         toast.error("Fichier de backup invalide", { duration: 4000 })
                     );

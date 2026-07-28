@@ -5,6 +5,7 @@ import { VoiceSessionProvider } from "@/context/VoiceSessionContext";
 import { WorkspacesPage } from "@/components/WorkspacesPage";
 import { WorkspacePage } from "@/components/WorkspacePage";
 import { CrashRecovery } from "@/components/CrashRecovery";
+import { Relia2FeatureTour } from "@/components/Relia2FeatureTour";
 import { Toaster } from "sonner";
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -27,6 +28,8 @@ function Router() {
                 onRestore={handleRestore}
             />
             {state.currentId ? <WorkspacePage /> : <WorkspacesPage />}
+            {/* Relia 2 export-only — assistant proactif (no-op hors variant) */}
+            <Relia2FeatureTour />
         </>
     );
 }

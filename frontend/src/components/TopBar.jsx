@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { useCrm } from "@/context/CrmContext";
 import {
     Search,
@@ -31,6 +31,8 @@ import {
     CheckCheck,
     AlertTriangle,
     CalendarDays,
+    Keyboard,
+    ChevronLeft,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -82,6 +84,7 @@ import { SidebarContent } from "./Sidebar";
 import { CardFieldsPanel } from "./CardFieldsPanel";
 import { DailyGoalWidget, DailyGoalEditor } from "./DailyGoalWidget";
 import { CrmCalendar } from "./CrmCalendar";
+import { KeyboardShortcutsDialog } from "./KeyboardShortcutsDialog";
 
 const QUICK_FILTERS = [
     { tag: "vigilance rouge", label: "Vigilance rouge", testId: "filter-vigilance-rouge" },
@@ -114,9 +117,45 @@ export const TopBar = ({
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const [searchOpen, setSearchOpen] = useState(false);
     const [goalEditorOpen, setGoalEditorOpen] = useState(false);
+    const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [filterInput, setFilterInput] = useState("");
     const [calendarOpen, setCalendarOpen] = useState(false);
     const [notifOpen, setNotifOpen] = useState(false);
+
+    // Raccourcis : focus / toggle recherche · ouvrir calendrier
+    useEffect(() => {
+        const focusSearchInput = () => {
+            window.setTimeout(() => {
+                document.querySelector('[data-testid="workspace-search-input"]')?.focus?.();
+            }, 50);
+        };
+        const onFocusSearch = () => {
+            setSearchOpen(true);
+            focusSearchInput();
+        };
+        const onToggleSearch = () => {
+            setSearchOpen((open) => {
+                if (open) {
+                    setFilterInput("");
+                    setFilter("");
+                    const el = document.querySelector('[data-testid="workspace-search-input"]');
+                    if (el && typeof el.blur === "function") el.blur();
+                    return false;
+                }
+                focusSearchInput();
+                return true;
+            });
+        };
+        const onOpenCalendar = () => setCalendarOpen(true);
+        window.addEventListener("relia:focus-search", onFocusSearch);
+        window.addEventListener("relia:toggle-search", onToggleSearch);
+        window.addEventListener("relia:open-calendar", onOpenCalendar);
+        return () => {
+            window.removeEventListener("relia:focus-search", onFocusSearch);
+            window.removeEventListener("relia:toggle-search", onToggleSearch);
+            window.removeEventListener("relia:open-calendar", onOpenCalendar);
+        };
+    }, [setFilter]);
 
     const VIEWS = [
         { id: "kanban",   icon: <Trello size={15} />,      label: "Kanban" },
@@ -235,8 +274,8 @@ export const TopBar = ({
                         aria-expanded={!!sidebarOpen}
                         title={
                             sidebarOpen
-                                ? "Replier la sidebar (⌘\\)"
-                                : "Afficher la sidebar (⌘\\)"
+                                ? "Replier la sidebar (⌘:)"
+                                : "Afficher la sidebar (⌘:)"
                         }
                         className={`hidden md:flex w-9 h-9 rounded-lg items-center justify-center shrink-0 transition-colors ${
                             sidebarOpen
@@ -244,7 +283,11 @@ export const TopBar = ({
                                 : "bg-primary/10 text-primary hover:bg-primary/15"
                         }`}
                     >
-                        <Folders size={16} strokeWidth={2} />
+                        {sidebarOpen ? (
+                            <ChevronLeft size={18} strokeWidth={2.25} />
+                        ) : (
+                            <Folders size={16} strokeWidth={2} />
+                        )}
                     </button>
 
                     <div className="min-w-0">
@@ -391,12 +434,12 @@ export const TopBar = ({
                         );
                     })()}
 
-                    {/* Notifications = recommandations (pas l'agenda) */}
+                    {/* Notifications intelligentes = hors agenda calendrier */}
                     <Popover open={notifOpen} onOpenChange={setNotifOpen}>
                         <PopoverTrigger asChild>
                             <button
                                 data-testid="topbar-notifications-btn"
-                                aria-label="Conseils de prospection"
+                                aria-label="Notifications"
                                 className="relative w-9 h-9 rounded-full hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors touch-target"
                             >
                                 <Bell size={16} />
@@ -417,13 +460,13 @@ export const TopBar = ({
                         >
                             <div className="px-4 py-3 border-b border-border/60 flex items-start justify-between gap-2">
                                 <div className="min-w-0">
-                                    <div className="font-semibold tracking-tight text-sm">Conseils</div>
+                                    <div className="font-semibold tracking-tight text-sm">Notifications</div>
                                     <div className="text-xs text-muted-foreground mt-0.5">
                                         {badgeCount === 0
-                                            ? "Rien d'urgent — le calendrier garde tes RDV"
+                                            ? "Rien d'urgent pour l'instant."
                                             : overdueCount > 0
-                                              ? `${overdueCount} oubli${overdueCount > 1 ? "s" : ""} · ${badgeCount} conseil${badgeCount > 1 ? "s" : ""}`
-                                              : `${badgeCount} recommandation${badgeCount > 1 ? "s" : ""}`}
+                                              ? `${overdueCount} manqué${overdueCount > 1 ? "s" : ""} · ${badgeCount} notification${badgeCount > 1 ? "s" : ""}`
+                                              : `${badgeCount} notification${badgeCount > 1 ? "s" : ""} à regarder`}
                                     </div>
                                 </div>
                                 {badgeCount > 0 && (
@@ -443,7 +486,7 @@ export const TopBar = ({
                             <div className="max-h-80 overflow-y-auto">
                                 {followups.length === 0 && (
                                     <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                                        Aucun conseil pour l&apos;instant. Les RDV et rappels restent dans le calendrier.
+                                        Aucune notification pour l&apos;instant. Les RDV et rappels restent dans le calendrier.
                                     </div>
                                 )}
                                 {followups.map((item) => {
@@ -466,7 +509,7 @@ export const TopBar = ({
                                                 <div className="min-w-0 flex-1">
                                                     <div className="flex items-center gap-1.5">
                                                         <div className="text-sm font-medium truncate">
-                                                            {lead?.company || title || "Conseil"}
+                                                            {lead?.company || title || "Notification"}
                                                         </div>
                                                         {overdue && (
                                                             <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-rose-500" aria-hidden />
@@ -652,6 +695,16 @@ export const TopBar = ({
                                 data-testid="settings-daily-goal-btn"
                             >
                                 <Target size={14} className="mr-2" /> Objectif quotidien
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Aide
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                onClick={() => setShortcutsOpen(true)}
+                                data-testid="settings-shortcuts-btn"
+                            >
+                                <Keyboard size={14} className="mr-2" /> Raccourcis clavier
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
@@ -939,6 +992,7 @@ export const TopBar = ({
 
         {/* Editor modal en dehors du header pour éviter les problèmes de z-index */}
         <DailyGoalEditor open={goalEditorOpen} onClose={() => setGoalEditorOpen(false)} />
+        <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
 
         <Dialog open={calendarOpen} onOpenChange={setCalendarOpen}>
             <DialogContent

@@ -9,6 +9,7 @@ import { rankContactNames } from "@/lib/contactRank";
 import { isManualRdv, isCalendarReminder } from "@/lib/nextActionUtils";
 import { toLocalDateKey } from "@/lib/dateUtils";
 import { isMeetingColumn } from "@/constants/columnPatterns";
+import { isRelia2Export } from "@/lib/reliaVariant";
 
 export const PANEL_SECTION_IDS = [
     "imported",
@@ -236,9 +237,11 @@ export function briefLinkLabel(link) {
         return rawLabel;
     }
     if (/maps\.google|google\.[^/]+\/maps|goo\.gl\/maps/i.test(href)) return "Maps";
-    const offer = detectJobOfferLink(href);
-    if (offer) return `Offre · ${offer.sourceLabel}`;
-    if (/francetravail|pole-emploi|emploi\.gouv/i.test(href)) return "France Travail";
+    if (!isRelia2Export) {
+        const offer = detectJobOfferLink(href);
+        if (offer) return `Offre · ${offer.sourceLabel}`;
+        if (/francetravail|pole-emploi|emploi\.gouv/i.test(href)) return "France Travail";
+    }
     if (/linkedin\.com/i.test(href)) return "LinkedIn";
     if (rawLabel && /site|web|url/i.test(rawLabel)) return "Site";
     const host = displayUrl(href).split("/")[0] || "";
@@ -717,10 +720,11 @@ export function extractLeadBrief(lead, opts = {}) {
         return fallback?.value?.trim() || null;
     };
 
-    const annonce = pickAnnonce();
-    const jobTitle = pick(BRIEF_FIELD_RES.jobTitle);
-    const location = pick(BRIEF_FIELD_RES.location);
-    const contract = pick(BRIEF_FIELD_RES.contract);
+    // Relia 2 export : pas de mise en avant annonce / poste / contrat
+    const annonce = isRelia2Export ? null : pickAnnonce();
+    const jobTitle = isRelia2Export ? null : pick(BRIEF_FIELD_RES.jobTitle);
+    const location = isRelia2Export ? null : pick(BRIEF_FIELD_RES.location);
+    const contract = isRelia2Export ? null : pick(BRIEF_FIELD_RES.contract);
     const contactFromImport = pick(BRIEF_FIELD_RES.contact);
 
     let notePhones = [];
@@ -782,7 +786,8 @@ export function extractLeadBrief(lead, opts = {}) {
         links.push({ href, display: displayUrl(href), label: label || null });
     };
 
-    if (lead?.website) {
+    // Relia 2 : le site web est affiché en dur dans le brief (pas dans le collapse liens)
+    if (lead?.website && !isRelia2Export) {
         pushLink(
             asHref(lead.website) || (lead.website.startsWith("http") ? lead.website : `https://${lead.website}`),
             "Site"
@@ -794,32 +799,35 @@ export function extractLeadBrief(lead, opts = {}) {
     }
 
     // Offre d'emploi (Indeed / Hellowork / France Travail) — mise en avant
+    // Relia 2 export : désactivé (focus site web à la place)
     let offerLink = null;
-    const considerOffer = (href, labelHint) => {
-        if (offerLink || !href) return;
-        const det = detectJobOfferLink(href);
-        if (!det) return;
-        offerLink = {
-            href: det.href,
-            display: displayUrl(det.href),
-            label: labelHint || null,
-            source: det.source,
-            sourceLabel: det.sourceLabel,
+    if (!isRelia2Export) {
+        const considerOffer = (href, labelHint) => {
+            if (offerLink || !href) return;
+            const det = detectJobOfferLink(href);
+            if (!det) return;
+            offerLink = {
+                href: det.href,
+                display: displayUrl(det.href),
+                label: labelHint || null,
+                source: det.source,
+                sourceLabel: det.sourceLabel,
+            };
         };
-    };
-    // Priorité aux champs explicitement « offre / annonce »
-    for (const e of entries) {
-        if (!/offre|annonce|lien.?offre|url.?offre|job.?url|job.?link/i.test(e.label || "")) continue;
-        considerOffer(asHref(e.value), e.label);
-    }
-    if (lead?.website) {
-        considerOffer(
-            asHref(lead.website) || (lead.website.startsWith("http") ? lead.website : `https://${lead.website}`),
-            "Lien offre"
-        );
-    }
-    for (const l of links) {
-        considerOffer(l.href, l.label);
+        // Priorité aux champs explicitement « offre / annonce »
+        for (const e of entries) {
+            if (!/offre|annonce|lien.?offre|url.?offre|job.?url|job.?link/i.test(e.label || "")) continue;
+            considerOffer(asHref(e.value), e.label);
+        }
+        if (lead?.website) {
+            considerOffer(
+                asHref(lead.website) || (lead.website.startsWith("http") ? lead.website : `https://${lead.website}`),
+                "Lien offre"
+            );
+        }
+        for (const l of links) {
+            considerOffer(l.href, l.label);
+        }
     }
 
     const otherLinks = offerLink
@@ -953,6 +961,8 @@ export function extractLeadBrief(lead, opts = {}) {
         return (TYPE_RANK[a.type] ?? 9) - (TYPE_RANK[b.type] ?? 9);
     });
 
+    const website = lead?.website || null;
+
     return {
         annonce,
         jobTitle,
@@ -962,13 +972,19 @@ export function extractLeadBrief(lead, opts = {}) {
         email,
         contact,
         contactSource,
-        website: lead?.website || null,
+        website,
         links: otherLinks.slice(0, 8),
         offerLink,
         insights: sortedInsights.slice(0, 8),
         contextualNotes,
         situation,
-        hasPertinent: sortedInsights.length > 0 || contextualNotes.length > 0 || situation.length > 0 || !!offerLink || !!annonce,
+        hasPertinent:
+            sortedInsights.length > 0
+            || contextualNotes.length > 0
+            || situation.length > 0
+            || !!offerLink
+            || !!annonce
+            || (isRelia2Export && !!website),
         hasBrief: !!(
             annonce
             || jobTitle
@@ -982,6 +998,7 @@ export function extractLeadBrief(lead, opts = {}) {
             || sortedInsights.length
             || contextualNotes.length
             || situation.length
+            || (isRelia2Export && website)
         ),
     };
 }

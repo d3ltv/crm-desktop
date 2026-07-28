@@ -38,6 +38,8 @@ export function PanelSectionCard({
     /** Compteur affiché à côté du titre (ex. nb de champs importés) */
     badge,
     isDragging = false,
+    /** Style plus léger (fiche « Lignes ») */
+    flat = false,
 }) {
     const collapsible = typeof onToggleCollapse === "function";
     const showLineBefore = dragOver && dropPlace === "before";
@@ -65,12 +67,16 @@ export function PanelSectionCard({
                 const place = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
                 onDrop?.(id, place);
             }}
-            className={`relative rounded-xl border bg-card shadow-sm overflow-hidden transition-[opacity,border-color,box-shadow] ${
-                isDragging
-                    ? "opacity-40 border-primary/40"
-                    : dragOver
-                      ? "border-primary/40"
-                      : "border-border"
+            className={`relative overflow-hidden transition-[opacity,border-color,box-shadow] ${
+                flat
+                    ? `rounded-lg border ${isDragging ? "opacity-40 border-primary/40" : dragOver ? "border-primary/35" : "border-border/60"} bg-transparent`
+                    : `rounded-xl border bg-card shadow-sm ${
+                        isDragging
+                            ? "opacity-40 border-primary/40"
+                            : dragOver
+                              ? "border-primary/40"
+                              : "border-border"
+                    }`
             }`}
         >
             {showLineBefore && (
@@ -85,7 +91,9 @@ export function PanelSectionCard({
                     aria-hidden
                 />
             )}
-            <div className="flex items-center gap-1.5 px-3 py-2.5 border-b border-border/70 bg-muted/20 group/sec">
+            <div className={`flex items-center gap-1.5 px-3 py-2.5 border-b group/sec ${
+                flat ? "border-border/40 bg-transparent" : "border-border/70 bg-muted/20"
+            }`}>
                 <button
                     type="button"
                     draggable
@@ -149,7 +157,11 @@ export function PanelSectionCard({
                     <EyeOff size={13} />
                 </button>
             </div>
-            {!collapsed && <div className="p-4 space-y-3">{children}</div>}
+            {!collapsed && (
+                <div className={flat ? "px-2 py-2 space-y-2" : "p-4 space-y-3"}>
+                    {children}
+                </div>
+            )}
         </section>
     );
 }

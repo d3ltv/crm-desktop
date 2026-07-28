@@ -279,6 +279,29 @@ body[data-voice-dock] [data-sonner-toaster] {
     opacity: 0.4;
     transform: scale(0.98);
 }
+
+/* Pendant un drag lead : rien ne bloque le hit-test colonne */
+.kanban-col.is-lead-dragging .lead-card {
+    pointer-events: none;
+}
+.kanban-col.is-lead-dragging > .flex > .group {
+    pointer-events: none;
+}
+.kanban-col.is-lead-dragging .kanban-drop-slot,
+.kanban-col.is-lead-dragging .kanban-drop-zone {
+    pointer-events: auto;
+    min-height: 12px;
+}
+
+/* Coupe le surlignage bleu de sélection pendant un drag prospect */
+html.relia-lead-dragging,
+html.relia-lead-dragging * {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+html.relia-lead-dragging {
+    cursor: grabbing !important;
+}
 .lead-card.quick-focused {
     border-color: hsl(var(--primary) / 0.55) !important;
     box-shadow: 0 0 0 1px hsl(var(--primary) / 0.18) !important;

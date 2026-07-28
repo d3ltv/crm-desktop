@@ -1,10 +1,10 @@
 /**
  * desktopNotifications.js — Notifications macOS natives (Relia / Tauri).
  *
- * Calendrier = agenda. OS = digest des recommandations (oublis / coaching),
+ * Calendrier = agenda. OS = digest de notifications intelligentes (manqués / à faire / à venir),
  * jamais 1 bannière par RDV du jour.
  *
- * Brief du matin (8h) : recalcule les conseils selon l’état actuel des leads
+ * Brief du matin (8h) : recalcule les notifications selon l’état actuel des leads
  * et chaque vue (niche), pousse un digest OS, et notifie l’UI cloche.
  */
 
@@ -18,13 +18,13 @@ import { flushDesktopStorageNow } from "@/lib/desktopLocalStorage";
 import { toLocalDateKey } from "@/lib/dateUtils";
 import {
     getAllUnreadNotifs,
-} from "@/lib/followupNotifs";
+} from "@/lib/reliaBrain";
 
 const SENT_KEY = "crm_os_notif_sent_v1";
 const COOLDOWN_MS = 45 * 60 * 1000; // 45 min entre digests reco « au fil de l’eau »
 export const MORNING_HOUR = 8;
 export const MORNING_MINUTE = 0;
-/** UI + scheduler : rafraîchir les recommandations du jour */
+/** UI + scheduler : rafraîchir les notifications du jour */
 export const DAILY_RECO_REFRESH_EVENT = "crm_daily_reco_refresh";
 
 let morningTimer = null;
@@ -87,7 +87,7 @@ export function isPastMorningToday(hour = MORNING_HOUR, minute = MORNING_MINUTE,
     return now.getTime() >= gate.getTime();
 }
 
-/** Force le recalcul UI des recommandations (cloche, badges). */
+/** Force le recalcul UI des notifications (cloche, badges). */
 export function emitDailyRecoRefresh(reason = "tick") {
     try {
         window.dispatchEvent(
@@ -103,7 +103,7 @@ function buildDigestCopy(items) {
         const it = items[0];
         const company = it.lead?.company;
         return {
-            title: it.title ? `Relia · ${it.title}` : "Relia · Conseil",
+            title: it.title ? `Relia · ${it.title}` : "Relia · Notification",
             body: company ? `${company} — ${it.label}` : it.label,
         };
     }
@@ -111,12 +111,12 @@ function buildDigestCopy(items) {
     if (overdue > 0) {
         return {
             title: "Relia · À regarder",
-            body: `${overdue} oubli${overdue > 1 ? "s" : ""} · ${items.length} conseil${items.length > 1 ? "s" : ""}`,
+            body: `${overdue} manqué${overdue > 1 ? "s" : ""} · ${items.length} notification${items.length > 1 ? "s" : ""}`,
         };
     }
     return {
-        title: "Relia · Conseils",
-        body: `${items.length} recommandation${items.length > 1 ? "s" : ""} pour ta prospection`,
+        title: "Relia · Notifications",
+        body: `${items.length} notification${items.length > 1 ? "s" : ""} pour ta prospection`,
     };
 }
 
@@ -152,8 +152,8 @@ function buildMorningDigestCopy(items) {
     return {
         title: "Relia · Brief du matin",
         body: parts.length > 0
-            ? `${items.length} conseil${items.length > 1 ? "s" : ""} — ${parts.join(" · ")}${focus}`
-            : `${items.length} recommandation${items.length > 1 ? "s" : ""} pour la journée${focus}`,
+            ? `${items.length} notification${items.length > 1 ? "s" : ""} — ${parts.join(" · ")}${focus}`
+            : `${items.length} notification${items.length > 1 ? "s" : ""} pour la journée${focus}`,
     };
 }
 
@@ -222,7 +222,7 @@ export async function pushMorningRecoDigest(state, opts = {}) {
 
     const pending = collectPending(state);
 
-    // OS : seulement s’il y a des conseils du jour (évite spam « rien à faire »)
+    // OS : seulement s’il y a des notifications du jour (évite spam « rien à faire »)
     if (pending.length > 0 && isTauri()) {
         const granted = await ensureNotificationPermission();
         if (granted) {

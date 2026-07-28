@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { useCrm } from "@/context/CrmContext";
 import { DEFAULT_CARD_FIELDS } from "@/context/CrmContext";
-import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal, AlertTriangle, Building2, GitBranch, RotateCcw } from "lucide-react";
+import { GripVertical, Eye, EyeOff, PanelsLeftRight, Trash2, GalleryHorizontal, AlertTriangle, Building2, GitBranch, RotateCcw, Rows3, LayoutList } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import {
     defaultInconsistencyConfig,
 } from "@/lib/inconsistencyRules";
 import { isAgencyDetectionEnabled } from "@/lib/agencyDetection";
+import { isRelia2Export } from "@/lib/reliaVariant";
 import {
     PIPELINE_ROLE_IDS,
     PIPELINE_ROLE_META,
@@ -55,6 +56,7 @@ export const CardFieldsPanel = ({ workspace }) => {
 
     const currentWidth = workspace.columnWidth ?? DEFAULT_WIDTH;
     const currentScale = workspace.cardScale ?? DEFAULT_SCALE;
+    const currentPanelLayout = workspace.panelInfoLayout === "rows" ? "rows" : "classic";
     const inconsistencyConfig = normalizeInconsistencyConfig(workspace.inconsistencyConfig);
     const agencyDetectionOn = isAgencyDetectionEnabled(workspace);
 
@@ -269,6 +271,53 @@ export const CardFieldsPanel = ({ workspace }) => {
                 </div>
             </div>
 
+            {/* ── Style fiche prospect (panel ouvert) ── */}
+            <div className="px-4 pt-3 pb-3 border-b border-border/60" data-testid="panel-info-layout-config">
+                <div className="flex items-center gap-1.5 text-sm font-semibold mb-2">
+                    <Rows3 size={14} className="text-muted-foreground" />
+                    Fiche prospect
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-snug mb-2.5">
+                    Style des infos quand un prospect est ouvert (le Kanban ne change pas).
+                </p>
+                <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-muted/50 border border-border/60">
+                    <button
+                        type="button"
+                        data-testid="panel-layout-classic"
+                        onClick={() => dispatch({
+                            type: "SET_PANEL_INFO_LAYOUT",
+                            workspaceId: workspace.id,
+                            layout: "classic",
+                        })}
+                        className={`h-8 rounded-lg text-[12px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors ${
+                            currentPanelLayout === "classic"
+                                ? "bg-card text-foreground shadow-sm border border-border"
+                                : "text-muted-foreground hover:text-foreground"
+                        }`}
+                    >
+                        <LayoutList size={13} strokeWidth={2} />
+                        Classique
+                    </button>
+                    <button
+                        type="button"
+                        data-testid="panel-layout-rows"
+                        onClick={() => dispatch({
+                            type: "SET_PANEL_INFO_LAYOUT",
+                            workspaceId: workspace.id,
+                            layout: "rows",
+                        })}
+                        className={`h-8 rounded-lg text-[12px] font-medium inline-flex items-center justify-center gap-1.5 transition-colors ${
+                            currentPanelLayout === "rows"
+                                ? "bg-card text-foreground shadow-sm border border-border"
+                                : "text-muted-foreground hover:text-foreground"
+                        }`}
+                    >
+                        <Rows3 size={13} strokeWidth={2} />
+                        Lignes
+                    </button>
+                </div>
+            </div>
+
             {/* ── Champs visibles ── */}
             <div className="px-4 py-3 border-b border-border/60">
                 <div className="flex items-center justify-between gap-2">
@@ -413,7 +462,8 @@ export const CardFieldsPanel = ({ workspace }) => {
                 )}
             </div>
 
-            {/* ── Détection cabinets de recrutement ── */}
+            {/* ── Détection cabinets de recrutement (masqué Relia 2) ── */}
+            {!isRelia2Export && (
             <div className="px-4 pt-3 pb-3 border-t border-border/60 space-y-2" data-testid="agency-detection-config">
                 <div className="flex items-center gap-1.5 text-sm font-semibold">
                     <Building2 size={14} className="text-orange-600 shrink-0" />
@@ -437,6 +487,7 @@ export const CardFieldsPanel = ({ workspace }) => {
                     />
                 </div>
             </div>
+            )}
 
             {/* ── Incohérences prospection ── */}
             <div className="px-4 pt-3 pb-3 border-t border-border/60 space-y-3" data-testid="inconsistency-config">
@@ -561,6 +612,7 @@ export const CardFieldsPanel = ({ workspace }) => {
                         dispatch({ type: "SET_CARD_FIELDS", workspaceId: workspace.id, fields: DEFAULT_CARD_FIELDS });
                         dispatch({ type: "SET_COLUMN_WIDTH", workspaceId: workspace.id, width: DEFAULT_WIDTH });
                         dispatch({ type: "SET_CARD_SCALE", workspaceId: workspace.id, scale: DEFAULT_SCALE });
+                        dispatch({ type: "SET_PANEL_INFO_LAYOUT", workspaceId: workspace.id, layout: "classic" });
                         dispatch({
                             type: "SET_INCONSISTENCY_CONFIG",
                             workspaceId: workspace.id,

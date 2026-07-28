@@ -1,32 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Target } from "lucide-react";
-import { isContactedColumn } from "@/constants/columnPatterns";
 import { useCrm } from "@/context/CrmContext";
 import { flushDesktopStorageNow } from "@/lib/desktopLocalStorage";
+import { countContactsToday } from "@/lib/reliaBrain";
 
-const isContactedCol = (name = "") => isContactedColumn(name);
 const LEGACY_GOAL_KEY = "crm_daily_goal";
-
-function getTodayStr() {
-    return new Date().toLocaleDateString("fr-CA");
-}
-
-function countContactedToday(workspace) {
-    const todayStr = getTodayStr();
-    let count = 0;
-    for (const lead of Object.values(workspace?.leads || {})) {
-        const history = lead.statusHistory || [];
-        const hasContactedToday = history.some((entry) => {
-            if (!entry.at) return false;
-            const entryDate = new Date(entry.at).toLocaleDateString("fr-CA");
-            if (entryDate !== todayStr) return false;
-            const col = workspace.columns?.[entry.columnId];
-            return col && isContactedCol(col.name);
-        });
-        if (hasContactedToday) count += 1;
-    }
-    return count;
-}
 
 function getColorScheme(ratio) {
     if (ratio >= 1) return { bar: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400", label: "Objectif atteint !" };
@@ -38,7 +15,7 @@ function getColorScheme(ratio) {
 export const DailyGoalWidget = ({ workspace, onEditGoal }) => {
     const { state } = useCrm();
     const goal = Math.max(1, state.settings?.dailyGoal || 20);
-    const current = useMemo(() => countContactedToday(workspace), [workspace]);
+    const current = useMemo(() => countContactsToday(workspace), [workspace]);
     const ratio = goal > 0 ? Math.min(current / goal, 1) : 0;
     const pct = Math.round(ratio * 100);
     const { bar, text, label } = getColorScheme(ratio);

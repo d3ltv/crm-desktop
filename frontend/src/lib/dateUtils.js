@@ -131,23 +131,29 @@ export function formatDateTimeLong(iso) {
 
 /**
  * Prochain rappel après un « pas de réponse » :
- * - matin (avant 12h) en semaine → cet après-midi (14h30)
- * - vendredi après-midi / soir → lundi matin (9h)
- * - sinon → +1 jour ouvré max, le matin (9h)
+ * - matin (avant 12h) en semaine → cet après-midi (heure préférée ou 14h30)
+ * - vendredi après-midi / soir → lundi (heure préférée ou 9h)
+ * - sinon → +1 jour ouvré, heure préférée ou 9h
  * @param {Date} [from]
+ * @param {{ preferredHour?: number|null }} [opts]
  * @returns {Date}
  */
-export function suggestNoAnswerFollowUp(from = new Date()) {
+export function suggestNoAnswerFollowUp(from = new Date(), opts = {}) {
     const now = from instanceof Date ? new Date(from.getTime()) : new Date(from);
     if (Number.isNaN(now.getTime())) return addDaysSkippingWeekend(1);
     const hour = now.getHours();
     const dow = now.getDay(); // 0=dim … 5=ven
     const isMorning = hour < 12;
+    const pref = Number.isFinite(opts.preferredHour)
+        ? Math.min(18, Math.max(8, Math.round(opts.preferredHour)))
+        : null;
+    const afternoonH = pref != null && pref >= 13 ? pref : 14;
+    const morningH = pref != null && pref < 13 ? pref : (pref != null ? Math.min(pref, 11) : 9);
 
     // Matin en semaine → rappel l'après-midi du même jour
     if (isMorning && dow >= 1 && dow <= 5) {
         const afternoon = new Date(now);
-        afternoon.setHours(14, 30, 0, 0);
+        afternoon.setHours(afternoonH, pref != null && pref >= 13 ? 0 : 30, 0, 0);
         if (afternoon.getTime() > now.getTime()) return afternoon;
     }
 
@@ -155,13 +161,13 @@ export function suggestNoAnswerFollowUp(from = new Date()) {
     if (dow === 5) {
         const monday = new Date(now);
         monday.setDate(monday.getDate() + 3);
-        monday.setHours(9, 0, 0, 0);
+        monday.setHours(morningH, 0, 0, 0);
         return monday;
     }
 
-    // Max +1 jour ouvré, matin
+    // Max +1 jour ouvré, matin / heure préférée
     const next = addDaysSkippingWeekend(1, now);
-    next.setHours(9, 0, 0, 0);
+    next.setHours(morningH, 0, 0, 0);
     return next;
 }
 

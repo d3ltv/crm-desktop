@@ -11,6 +11,7 @@ import {
     Pencil,
     MessageSquare,
     Wand2,
+    Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,7 +28,9 @@ import {
 } from "@/lib/nextActionUtils";
 import { clearLeadSchedule, scheduleLeadNextAction } from "@/lib/scheduleLead";
 import { openLeadFromCalendar, CALENDAR_EVENT_META } from "@/lib/calendarEvents";
-import { extractLeadBrief, pickBriefSituation, briefLinkLabel, jobOfferLinkClass, jobOfferUnderlineClass } from "@/lib/panelSections";
+import { extractLeadBrief, pickBriefSituation, briefLinkLabel, jobOfferLinkClass, jobOfferUnderlineClass, displayUrl } from "@/lib/panelSections";
+import { websiteHref } from "@/lib/actionLinks";
+import { isRelia2Export } from "@/lib/reliaVariant";
 import { parseNote, detectAppointment } from "@/lib/noteParser";
 import { isMeetingColumn } from "@/constants/columnPatterns";
 import { getColumnColor } from "@/lib/columnColors";
@@ -678,7 +681,7 @@ export function CalendarEventSheet({ open, event, onClose }) {
                                 </section>
                             )}
 
-                            {(brief.annonce || brief.jobTitle || brief.location || brief.contract) && (
+                            {!isRelia2Export && (brief.annonce || brief.jobTitle || brief.location || brief.contract) && (
                                 <section className="space-y-0.5" data-testid="calendar-brief-contexte">
                                     <p className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
                                         Contexte
@@ -739,6 +742,25 @@ export function CalendarEventSheet({ open, event, onClose }) {
                                 </section>
                             )}
 
+                            {isRelia2Export && brief.website && (
+                                <section className="space-y-0.5" data-testid="calendar-brief-website">
+                                    <p className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Site web
+                                    </p>
+                                    <a
+                                        href={websiteHref(brief.website) || undefined}
+                                        target="_blank"
+                                        rel="noreferrer noopener"
+                                        className="inline-flex items-center gap-1 text-[12px] font-semibold text-primary hover:underline max-w-full"
+                                        title={brief.website}
+                                        onClick={(e) => e.stopPropagation()}
+                                    >
+                                        <Globe size={10} className="shrink-0 opacity-80" />
+                                        <span className="truncate">{displayUrl(websiteHref(brief.website) || brief.website)}</span>
+                                    </a>
+                                </section>
+                            )}
+
                             {latestNote && (
                                 <section className="space-y-0.5">
                                     <p className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -796,7 +818,7 @@ export function CalendarEventSheet({ open, event, onClose }) {
                                 </section>
                             )}
 
-                            {brief.offerLink && (
+                            {!isRelia2Export && brief.offerLink && (
                                 <a
                                     href={brief.offerLink.href}
                                     target="_blank"

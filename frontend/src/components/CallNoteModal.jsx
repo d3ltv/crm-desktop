@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { Phone, PhoneOff, Save, X, Sparkles, CalendarClock, BellRing } from "lucide-react";
+import { Phone, PhoneOff, Save, X, Sparkles, CalendarClock, BellRing, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/context/CrmContext";
@@ -16,17 +16,12 @@ import { allocateMainDupeLabels } from "@/lib/customFields";
 import { parseNote, diffWithLead, formatDetected, detectAppointment } from "@/lib/noteParser";
 import { makeRdvNextAction, makeCalendarReminder } from "@/lib/nextActionUtils";
 import { resolvePipelineColumnId } from "@/lib/pipelineRoles";
-import { saveCallRecording } from "@/lib/callRecordings";
-import { CallRecorderBar } from "@/components/CallRecorderBar";
+import { useVoiceSession } from "@/context/VoiceSessionContext";
+import { getCallDefaults } from "@/lib/reliaBrain";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
-/** Défaut chips Joint — indépendant du seuil « vigilance pas de réponse ». */
-const DEFAULT_JOINT_RELANCE_DAYS = 2;
 const RELANCE_DAY_CHIPS = [1, 2, 3, 4, 5, 6, 7];
-
-const newRecordingId = () =>
-    `rec_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 export const CallNoteModal = ({
     open,
@@ -37,16 +32,29 @@ export const CallNoteModal = ({
     /** Si fourni (mode rapide) : déplacer vers cette colonne uniquement à l'enregistrement, pas à l'ouverture */
     pendingMoveToColumnId = null,
 }) => {
-    const { dispatch } = useCrm();
+    const { dispatch, state } = useCrm();
+    const voice = useVoiceSession();
     const [text, setText] = useState("");
     /** 'reached' | 'noanswer' — défaut Joint (on arrive souvent via Contacté). */
     const [outcome, setOutcome] = useState("reached");
     const [outcomeManual, setOutcomeManual] = useState(false);
     const [suggestSchedule, setSuggestSchedule] = useState(true);
-    const [relanceDays, setRelanceDays] = useState(DEFAULT_JOINT_RELANCE_DAYS);
-    const [pendingRecording, setPendingRecording] = useState(null);
-    const [recordingBusy, setRecordingBusy] = useState(false);
+    const callDefaults = useMemo(() => {
+        const allWs = (state.order || []).map((id) => state.workspaces?.[id]).filter(Boolean);
+        return getCallDefaults(workspace, { workspaces: allWs });
+    }, [workspace, state.order, state.workspaces]);
+    const defaultRelanceDays = callDefaults.relanceDays;
+    const preferredHour = callDefaults.preferredHour;
+    const [relanceDays, setRelanceDays] = useState(2);
     const [saving, setSaving] = useState(false);
+
+    const voiceHere = !!(lead && voice.isActiveFor(lead.id));
+    const voiceRecordingHere = voiceHere && voice.status === "recording";
+    const voiceElsewhere =
+        voice.status !== "idle"
+        && voice.target
+        && lead
+        && voice.target.leadId !== lead.id;
 
     useEffect(() => {
         if (open) {
@@ -54,12 +62,16 @@ export const CallNoteModal = ({
             setOutcome("reached");
             setOutcomeManual(false);
             setSuggestSchedule(true);
-            setRelanceDays(DEFAULT_JOINT_RELANCE_DAYS);
-            setPendingRecording(null);
-            setRecordingBusy(false);
+            setRelanceDays(defaultRelanceDays);
             setSaving(false);
         }
-    }, [open, lead?.id]);
+    }, [open, lead?.id, defaultRelanceDays]);
+
+    // Vocal démarré depuis cette note → considérer Joint (sauf choix manuel NRP)
+    useEffect(() => {
+        if (!open || !voiceRecordingHere || outcomeManual) return;
+        setOutcome("reached");
+    }, [open, voiceRecordingHere, outcomeManual]);
 
     const handleTextChange = (e) => {
         const val = e.target.value;
@@ -75,16 +87,19 @@ export const CallNoteModal = ({
         setOutcomeManual(true);
         setSuggestSchedule(true);
         if (value === "reached") {
-            setRelanceDays(DEFAULT_JOINT_RELANCE_DAYS);
+            setRelanceDays(defaultRelanceDays);
         }
     };
 
-    /** Vocal = interlocuteur joint (sauf choix manuel « Pas de réponse »). */
-    const handleRecordingChange = (rec) => {
-        setPendingRecording(rec);
-        if (rec?.blob && !outcomeManual) {
-            setOutcome("reached");
+    /** Ferme la note sans couper un vocal en cours (dock flottant). */
+    const closeSoft = () => {
+        if (voiceRecordingHere) {
+            toast.message("Appel en cours", {
+                description: "Le micro continue en bas — note flottante. Rouvre la fiche pour retrouver le lead.",
+                duration: 3200,
+            });
         }
+        onClose();
     };
 
     const detected = useMemo(() => parseNote(text), [text]);
@@ -119,32 +134,17 @@ export const CallNoteModal = ({
     const showSchedule = !appointment && (outcome === "noanswer" || outcome === "reached");
 
     const save = async () => {
-        if (!lead || !open || saving || recordingBusy) return;
+        if (!lead || !open || saving) return;
+        if (voiceRecordingHere) {
+            toast.message("Arrêtez d’abord le micro", {
+                description: "Le dock flottant en bas : Arrêter — la transcription suivra toute seule.",
+            });
+            return;
+        }
         const finalOutcome = outcome === "noanswer" ? "noanswer" : "reached";
         const content = text.trim();
 
         setSaving(true);
-        let recordingId = null;
-        if (pendingRecording?.blob) {
-            try {
-                recordingId = newRecordingId();
-                await saveCallRecording({
-                    id: recordingId,
-                    leadId: lead.id,
-                    workspaceId: workspace.id,
-                    blob: pendingRecording.blob,
-                    mimeType: pendingRecording.mimeType,
-                    durationMs: pendingRecording.durationMs,
-                    peaks: pendingRecording.peaks,
-                });
-            } catch (err) {
-                console.warn("[CallNote] save recording failed:", err);
-                toast.error("Audio non sauvegardé", {
-                    description: "La note sera quand même enregistrée",
-                });
-                recordingId = null;
-            }
-        }
 
         let effectiveColumnId = lead.columnId;
         if (pendingMoveToColumnId && lead.columnId !== pendingMoveToColumnId) {
@@ -169,7 +169,6 @@ export const CallNoteModal = ({
                 workspaceId: workspace.id,
                 leadId: lead.id,
                 text: noteText,
-                recordingId,
             });
         } else {
             dispatch({
@@ -177,7 +176,6 @@ export const CallNoteModal = ({
                 workspaceId: workspace.id,
                 leadId: lead.id,
                 text: noteText,
-                recordingId,
             });
         }
 
@@ -237,7 +235,7 @@ export const CallNoteModal = ({
             patch.autoFollowup = null;
         } else if (suggestSchedule) {
             if (finalOutcome === "noanswer") {
-                const dueDate = suggestNoAnswerFollowUp();
+                const dueDate = suggestNoAnswerFollowUp(new Date(), { preferredHour });
                 const dueAt = dueDate.toISOString();
                 const dateKey = toLocalDateKey(dueDate);
                 const relative = formatNoAnswerFollowUpLabel(dueDate);
@@ -349,12 +347,13 @@ export const CallNoteModal = ({
         }
 
         onClose();
+        setSaving(false);
     };
 
     useEffect(() => {
         const onKey = (e) => {
-            if (e.key === "Escape" && open) onClose();
-            if (e.key === "Enter" && open && !saving && !recordingBusy) {
+            if (e.key === "Escape" && open) closeSoft();
+            if (e.key === "Enter" && open && !saving && !voiceRecordingHere) {
                 if (e.target.tagName === "TEXTAREA") {
                     if (e.metaKey || e.ctrlKey) save();
                 } else {
@@ -365,12 +364,12 @@ export const CallNoteModal = ({
         document.addEventListener("keydown", onKey);
         return () => document.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, text, outcome, pendingMoveToColumnId, suggestSchedule, relanceDays, pendingRecording, saving, recordingBusy]);
+    }, [open, text, outcome, pendingMoveToColumnId, suggestSchedule, relanceDays, saving, voiceRecordingHere]);
 
     if (!open || !lead) return null;
 
     const isMac = /iPhone|iPad|Macintosh/.test(navigator.userAgent);
-    const noAnswerDue = suggestNoAnswerFollowUp();
+    const noAnswerDue = suggestNoAnswerFollowUp(new Date(), { preferredHour });
     const noAnswerDueLabel = formatNoAnswerFollowUpLabel(noAnswerDue);
     const relanceDueDate = addDaysSkippingWeekendIso(relanceDays);
     const relanceDueLabel = new Date(relanceDueDate).toLocaleDateString("fr-FR", {
@@ -389,7 +388,7 @@ export const CallNoteModal = ({
         ? "Colonne Relance · matin → après-midi · sinon +1 j · ven. soir → lun. matin"
         : "Hors week-end · 9 h";
 
-    const skip = () => onClose();
+    const skip = () => closeSoft();
 
     const footerHint = hasNewInfo
         ? "Fiche mise à jour"
@@ -482,11 +481,73 @@ export const CallNoteModal = ({
                         className="min-h-[88px] resize-none rounded-xl text-sm border-border"
                     />
 
-                    <CallRecorderBar
-                        onChange={handleRecordingChange}
-                        onBusyChange={setRecordingBusy}
-                        disabled={saving}
-                    />
+                    {/* Vocal global — continue en dock flottant si on ferme la note */}
+                    <div
+                        className="rounded-xl border border-border/60 bg-muted/20 px-3 py-2.5 space-y-2"
+                        data-testid="call-note-voice"
+                    >
+                        {voiceElsewhere ? (
+                            <div className="flex items-center justify-between gap-2">
+                                <p className="text-[12px] text-muted-foreground truncate">
+                                    Appel en cours sur · {voice.target?.leadLabel}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={voice.openTarget}
+                                    className="h-8 px-3 rounded-full text-[11px] font-medium bg-secondary shrink-0"
+                                >
+                                    Revenir
+                                </button>
+                            </div>
+                        ) : voiceRecordingHere ? (
+                            <div className="flex items-center gap-2">
+                                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                                    <span className="absolute inset-0 rounded-full bg-destructive/40 animate-ping" />
+                                    <span className="relative h-2.5 w-2.5 rounded-full bg-destructive" />
+                                </span>
+                                <p className="text-[12px] font-medium tabular-nums flex-1">
+                                    {voice.formatDuration(voice.elapsedMs)}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={voice.stop}
+                                    data-testid="call-note-voice-stop"
+                                    className="h-8 px-3 rounded-full text-[11px] font-medium bg-foreground text-background"
+                                >
+                                    Arrêter
+                                </button>
+                            </div>
+                        ) : voiceHere && voice.status === "ready" ? (
+                            <p className="text-[12px] text-muted-foreground">
+                                {voice.busyLabel || "Transcription / enregistrement…"}
+                            </p>
+                        ) : (
+                            <div className="flex items-center justify-between gap-2">
+                                <p className="text-[12px] text-muted-foreground">
+                                    Note vocale (persiste si tu fermes)
+                                </p>
+                                <button
+                                    type="button"
+                                    data-testid="call-note-voice-start"
+                                    disabled={saving || voice.status === "recording"}
+                                    onClick={() => voice.start({
+                                        workspaceId: workspace.id,
+                                        leadId: lead.id,
+                                        leadLabel: lead.company || lead.contact || "Prospect",
+                                    })}
+                                    className="h-8 pl-2.5 pr-3 rounded-full inline-flex items-center gap-1.5 text-[11px] font-medium border border-border bg-background hover:bg-secondary disabled:opacity-40"
+                                >
+                                    <Mic size={13} className="text-primary" />
+                                    Micro
+                                </button>
+                            </div>
+                        )}
+                        {voiceRecordingHere && (
+                            <p className="text-[10px] text-muted-foreground leading-snug">
+                                Tu peux fermer cette note : le micro reste en bas (dock flottant).
+                            </p>
+                        )}
+                    </div>
 
                     {appointment && (
                         <div className="flex items-center gap-2.5 rounded-xl border border-border bg-secondary/40 px-3 py-2.5">
@@ -627,12 +688,12 @@ export const CallNoteModal = ({
                         </Button>
                         <Button
                             onClick={save}
-                            disabled={saving || recordingBusy}
+                            disabled={saving || voiceRecordingHere}
                             data-testid="call-note-save"
                             className="h-9 rounded-full px-4 bg-primary hover:bg-primary/90 text-primary-foreground text-[13px]"
                         >
                             <Save size={13} className="mr-1.5" />
-                            {saving ? "…" : recordingBusy ? "Stop d'abord" : "Enregistrer"}
+                            {saving ? "…" : voiceRecordingHere ? "Stop d'abord" : "Enregistrer"}
                         </Button>
                     </div>
                 </div>

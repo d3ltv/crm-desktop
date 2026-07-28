@@ -4,10 +4,27 @@
  * Modèle : whisper-base (~75 Mo) — bien plus léger que small (~240 Mo).
  * Pour des notes d'appel FR courtes (tél., emails, RDV) avec language forcé,
  * le gain poids/vitesse vaut le léger écart de précision vs small.
+ *
+ * Anti-hallucination silence : gate RMS + params decode + nettoyage post-texte
+ * (Whisper invente souvent « bruit de pause », « bla bla », sous-titres… sur le calme).
  */
+
+import {
+    decideEngineConfig,
+    getDecodeParams,
+    recordPerfSample,
+    registerReleaseCallback,
+    runExclusive,
+} from "@/lib/whisperGovernor";
 
 const MODEL_ID = "Xenova/whisper-base";
 const TARGET_RATE = 16000;
+
+/** RMS sous ce seuil ≈ silence / bruit de fond quasi nul (Float32 [-1,1]). */
+const SILENCE_RMS = 0.012;
+/** Si > cette part des échantillons sont « silencieux », on skippe la chunk. */
+const SILENCE_SAMPLE_RATIO = 0.92;
+const QUIET_SAMPLE_ABS = 0.02;
 
 let pipelinePromise = null;
 
@@ -17,6 +34,118 @@ function report(onProgress, payload) {
     } catch {
         /* ignore */
     }
+}
+
+/** RMS + part d’échantillons quasi nuls. */
+export function audioEnergyStats(audio) {
+    if (!audio?.length) return { rms: 0, quietRatio: 1, durationSec: 0 };
+    let sumSq = 0;
+    let quiet = 0;
+    const n = audio.length;
+    for (let i = 0; i < n; i += 1) {
+        const v = audio[i];
+        sumSq += v * v;
+        if (Math.abs(v) < QUIET_SAMPLE_ABS) quiet += 1;
+    }
+    return {
+        rms: Math.sqrt(sumSq / n),
+        quietRatio: quiet / n,
+        durationSec: n / TARGET_RATE,
+    };
+}
+
+/** True si l’audio est trop calme pour une vraie parole. */
+export function isMostlySilent(audio) {
+    const { rms, quietRatio, durationSec } = audioEnergyStats(audio);
+    if (durationSec < 0.35) return true;
+    if (rms < SILENCE_RMS) return true;
+    if (quietRatio >= SILENCE_SAMPLE_RATIO && rms < SILENCE_RMS * 2.5) return true;
+    return false;
+}
+
+/**
+ * Phrases / motifs typiques inventés par Whisper FR sur silence ou jingle.
+ * Ancré début→fin : pour une ligne ou un texte entier.
+ */
+const HALLUCINATION_FULL_RE = new RegExp(
+    [
+        "^\\s*(?:",
+        "\\[?\\s*(?:musique|silence|applaudissements?|rires?|inaudible|bruit[s]?(?:\\s+de\\s+[\\wàâäéèêëïîôùûüç'-]+)?)\\s*\\]?",
+        "|\\(?\\s*(?:musique|silence|bruit[s]?(?:\\s+de\\s+[\\wàâäéèêëïîôùûüç'-]+)?)\\s*\\)?",
+        "|sous-titres?\\s+(?:réalisés?|faits?|créés?|par).+",
+        "|merci\\s+d['’]avoir\\s+regardé.*",
+        "|amara\\.org.*",
+        "|♪+|🎵+",
+        "|bla(?:\\s*[·.,_-]?\\s*bla){1,}\\.?",
+        "|hum+(?:\\s+hum+){2,}",
+        "|euh+(?:\\s+euh+){2,}",
+        ")\\s*$",
+    ].join(""),
+    "i"
+);
+
+const HALLUCINATION_INLINE_RE = /\[?\s*(?:musique|silence|applaudissements?|rires?|inaudible|bruit[s]?\s+de\s+(?:pause|fond|salle|micro|ambiance))\s*\]?/gi;
+
+/**
+ * Nettoie les artefacts Whisper (répétitions, « bruit de pause », bla-bla…).
+ * @param {string} raw
+ * @returns {string}
+ */
+export function sanitizeWhisperTranscript(raw) {
+    let text = String(raw || "").replace(/\u00a0/g, " ").trim();
+    if (!text) return "";
+
+    // Détection de boucle AVANT collapse (sinon « merci×20 » devient « merci »)
+    const wordsForLoop = text
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .split(/[^\p{L}\p{N}']+/u)
+        .filter((w) => w.length > 1);
+    if (wordsForLoop.length >= 8) {
+        const counts = Object.create(null);
+        let max = 0;
+        for (const w of wordsForLoop) {
+            counts[w] = (counts[w] || 0) + 1;
+            if (counts[w] > max) max = counts[w];
+        }
+        if (max / wordsForLoop.length >= 0.4) return "";
+    }
+
+    // Lignes entièrement hallucinées
+    const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+    const kept = [];
+    for (const line of lines) {
+        if (HALLUCINATION_FULL_RE.test(line)) continue;
+        if (/^[\s.…,;:!?\-–—'"«»]+$/.test(line)) continue;
+        kept.push(line);
+    }
+    text = kept.join("\n").trim();
+    if (!text) return "";
+
+    // Tags inline au milieu d’une vraie phrase
+    text = text.replace(HALLUCINATION_INLINE_RE, " ").replace(/\s{2,}/g, " ").trim();
+
+    // Même mot 4+ fois d’affilée → 1
+    text = text.replace(
+        /\b([\wÀ-ÿ][\wÀ-ÿ''-]{0,30})\b(?:\s+\1\b){3,}/gi,
+        "$1"
+    );
+
+    // Même expression (2–6 mots) répétée 3+ fois → 1
+    text = text.replace(
+        /\b((?:[\wÀ-ÿ][\wÀ-ÿ''-]{0,24}\s+){1,5}[\wÀ-ÿ][\wÀ-ÿ''-]{0,24})\b(?:\s+\1\b){2,}/gi,
+        "$1"
+    );
+
+    text = text.replace(/\bbla(?:\s*bla)+\b/gi, "");
+    text = text.replace(/\b(?:bla){3,}\b/gi, "");
+    text = text.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    if (!text) return "";
+
+    if (HALLUCINATION_FULL_RE.test(text)) return "";
+
+    return text.trim();
 }
 
 /**
@@ -124,7 +253,9 @@ async function getTranscriber(onProgress) {
             env.useBrowserCache = true;
             try {
                 if (env.backends?.onnx?.wasm) {
-                    env.backends.onnx.wasm.numThreads = 1;
+                    // Multi-thread seulement si SharedArrayBuffer réel (jamais sous WKWebView) —
+                    // sinon 1 thread : le multi-thread WASM fait exploser la RAM sur macOS/iOS.
+                    env.backends.onnx.wasm.numThreads = decideEngineConfig().numThreads;
                 }
             } catch {
                 /* ignore */
@@ -160,6 +291,74 @@ async function getTranscriber(onProgress) {
     return pipelinePromise;
 }
 
+/** Libère le pipeline (gros buffers WASM) — rechargé depuis le cache navigateur au besoin. */
+async function releasePipeline() {
+    const p = pipelinePromise;
+    pipelinePromise = null;
+    if (!p) return;
+    try {
+        const transcriber = await p;
+        await transcriber?.dispose?.();
+    } catch { /* ignore */ }
+}
+
+registerReleaseCallback(() => {
+    void releasePipeline();
+});
+
+/**
+ * Préchauffe le modèle (à appeler quand une transcription est probable,
+ * ex. début d'enregistrement) : la transcription finale démarre sans latence.
+ */
+export function warmupWhisper(onProgress) {
+    if (!isTranscribeSupported()) return Promise.resolve(null);
+    return getTranscriber(onProgress).catch(() => null);
+}
+
+/**
+ * @param {Float32Array} audio mono 16 kHz
+ * @param {{ onProgress?: (p: object) => void }} [opts]
+ * @returns {Promise<string>}
+ */
+export async function transcribeMono16k(audio, { onProgress } = {}) {
+    if (!audio?.length) return "";
+
+    if (isMostlySilent(audio)) {
+        report(onProgress, {
+            status: "done",
+            message: "Silence — pas de transcription",
+            progress: 100,
+        });
+        return "";
+    }
+
+    // File unique : deux décodes en parallèle doubleraient les pics RAM
+    return runExclusive(async () => {
+        const transcriber = await getTranscriber(onProgress);
+        report(onProgress, { status: "transcribing", message: "Transcription en cours…" });
+
+        const started = performance.now();
+        const result = await transcriber(audio, {
+            language: "french",
+            task: "transcribe",
+            ...getDecodeParams(),
+            return_timestamps: false,
+            // Réduit les boucles / inventions sur silence (si supporté par le generate)
+            temperature: 0,
+            no_repeat_ngram_size: 3,
+            compression_ratio_threshold: 2.4,
+            logprob_threshold: -1.0,
+            no_speech_threshold: 0.6,
+            condition_on_previous_text: false,
+        });
+        recordPerfSample(audio.length / TARGET_RATE, performance.now() - started);
+
+        const text = sanitizeWhisperTranscript(String(result?.text || ""));
+        report(onProgress, { status: "done", message: "Terminé", progress: 100 });
+        return text;
+    });
+}
+
 /**
  * @param {Blob} blob
  * @param {{ onProgress?: (p: object) => void }} [opts]
@@ -169,21 +368,7 @@ export async function transcribeAudioBlob(blob, { onProgress } = {}) {
     report(onProgress, { status: "decoding", message: "Lecture de l'audio…" });
     const audio = await decodeAudioToMono16k(blob);
     if (!audio?.length) throw new Error("Audio vide");
-
-    const transcriber = await getTranscriber(onProgress);
-    report(onProgress, { status: "transcribing", message: "Transcription en cours…" });
-
-    const result = await transcriber(audio, {
-        language: "french",
-        task: "transcribe",
-        chunk_length_s: 30,
-        stride_length_s: 5,
-        return_timestamps: false,
-    });
-
-    const text = String(result?.text || "").trim();
-    report(onProgress, { status: "done", message: "Terminé", progress: 100 });
-    return text;
+    return transcribeMono16k(audio, { onProgress });
 }
 
 export function isTranscribeSupported() {

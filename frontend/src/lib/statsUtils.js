@@ -12,6 +12,7 @@ import {
     isAgencyDetectionEnabled,
 } from "@/lib/agencyDetection";
 import { getLeadVigilance } from "@/lib/inconsistencyRules";
+import { getProspectingBrief } from "@/lib/reliaBrain";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -491,21 +492,11 @@ export function computeCallStats(workspaces) {
         });
     }
 
-    // ── Meilleure heure (min 3 appels, taux le plus élevé) ─────────────────────
-    const bestHourEntry = byHour
-        .filter((h) => h.total >= 3 && h.rate !== null)
-        .sort((a, b) => b.rate - a.rate)[0] || null;
-    const bestHour = bestHourEntry
-        ? { hour: bestHourEntry.hour, rate: bestHourEntry.rate, total: bestHourEntry.total }
-        : null;
-
-    // ── Meilleur jour de semaine (min 3 appels) ────────────────────────────────
-    const bestDayEntry = byDayOfWeek
-        .filter((d) => d.total >= 3 && d.rate !== null)
-        .sort((a, b) => b.rate - a.rate)[0] || null;
-    const bestDay = bestDayEntry
-        ? { day: bestDayEntry.day, label: bestDayEntry.label, rate: bestDayEntry.rate, total: bestDayEntry.total }
-        : null;
+    // ── Meilleure heure / jour = cerveau Relia (même vérité accueil) ─
+    const wsList = Array.isArray(workspaces) ? workspaces : [];
+    const slot = getProspectingBrief(wsList);
+    const bestHour = slot?.available ? slot.bestHour : null;
+    const bestDay = slot?.available ? slot.bestDay : null;
 
     // ── Streak : jours consécutifs avec appels (jusqu'à aujourd'hui) ──────────
     let streak = 0;

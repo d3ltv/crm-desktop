@@ -11,6 +11,7 @@
 import { diskLoadUsage, diskSaveUsage } from "@/lib/diskUsage";
 import { isTauri } from "@/lib/diskStorage";
 import { isManualRdv } from "@/lib/nextActionUtils";
+import { getWorkspaceRecoProfile } from "@/lib/recoProfile";
 
 const LS_KEY = "crm_usage_memory_v1";
 const MAX_EVENTS = 400;
@@ -56,8 +57,48 @@ let hydratePromise = null;
 let saveTimer = null;
 let dirty = false;
 
-/** Pending lead signals pour mesurer délais (NRP → rappel, joint → RDV). */
+/** Pending lead signals pour mesurer délais (NRP → rappel, joint → RDV). Persistés dans crm_usage_v1. */
 const pendingByLead = new Map(); // leadId → { nrpAt?, reachedAt?, wsId }
+const PENDING_MAX_AGE_MS = 21 * 24 * 60 * 60 * 1000;
+const BUSINESS_HOUR_MIN = 8;
+const BUSINESS_HOUR_MAX = 19;
+
+function syncPendingToMemory(mem) {
+    if (!mem.global) mem.global = {};
+    const obj = {};
+    for (const [leadId, pending] of pendingByLead.entries()) {
+        if (pending && (pending.nrpAt || pending.reachedAt)) {
+            obj[leadId] = {
+                nrpAt: pending.nrpAt || undefined,
+                reachedAt: pending.reachedAt || undefined,
+                wsId: pending.wsId || undefined,
+            };
+        }
+    }
+    mem.global.pendingByLead = obj;
+}
+
+function loadPendingFromMemory(mem) {
+    pendingByLead.clear();
+    const raw = mem?.global?.pendingByLead;
+    if (!raw || typeof raw !== "object") return;
+    const now = Date.now();
+    for (const [leadId, pending] of Object.entries(raw)) {
+        if (!pending || typeof pending !== "object") continue;
+        const stamp = pending.nrpAt || pending.reachedAt;
+        if (stamp) {
+            const t = new Date(stamp).getTime();
+            if (Number.isFinite(t) && now - t > PENDING_MAX_AGE_MS) continue;
+        }
+        if (pending.nrpAt || pending.reachedAt) {
+            pendingByLead.set(leadId, {
+                nrpAt: pending.nrpAt || undefined,
+                reachedAt: pending.reachedAt || undefined,
+                wsId: pending.wsId || undefined,
+            });
+        }
+    }
+}
 
 function emptyHourCounts() {
     return Array.from({ length: 24 }, () => 0);
@@ -84,7 +125,16 @@ function createEmptyMemory() {
                 reachedToRdvHours: [],
                 sessionGapsHours: [],
             },
+            pendingByLead: {},
             lastActiveAt: null,
+            uiGuidance: {
+                relia2FeatureTour: {
+                    status: "not_started",
+                    seenFeatures: {},
+                    completed: false,
+                    completedAt: null,
+                },
+            },
         },
         workspaces: {},
         events: [],
@@ -132,10 +182,11 @@ function median(arr) {
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
+/** Pic d’activité sur heures ouvrées (évite nuit / coding late). */
 function peakHour(hourCounts) {
     let best = 9;
     let max = -1;
-    for (let h = 0; h < 24; h += 1) {
+    for (let h = BUSINESS_HOUR_MIN; h <= BUSINESS_HOUR_MAX; h += 1) {
         const v = hourCounts[h] || 0;
         if (v > max) {
             max = v;
@@ -156,6 +207,25 @@ function persistToLocalFallback(mem) {
     try {
         localStorage.setItem(LS_KEY, JSON.stringify(mem));
     } catch { /* ignore */ }
+}
+
+function ensureRelia2TourState(mem) {
+    if (!mem.global) mem.global = {};
+    if (!mem.global.uiGuidance) mem.global.uiGuidance = {};
+    if (!mem.global.uiGuidance.relia2FeatureTour) {
+        mem.global.uiGuidance.relia2FeatureTour = {
+            status: "not_started",
+            seenFeatures: {},
+            completed: false,
+            completedAt: null,
+        };
+    }
+    const tour = mem.global.uiGuidance.relia2FeatureTour;
+    if (!tour.status) tour.status = tour.completed ? "completed" : "not_started";
+    if (!tour.seenFeatures || typeof tour.seenFeatures !== "object") tour.seenFeatures = {};
+    if (typeof tour.completed !== "boolean") tour.completed = !!tour.completedAt;
+    if (!("completedAt" in tour)) tour.completedAt = null;
+    return tour;
 }
 
 function loadFromLocalFallback() {
@@ -209,6 +279,11 @@ export async function hydrateUsageMemory() {
         }
         if (!Array.isArray(memory.events)) memory.events = [];
         if (!memory.workspaces) memory.workspaces = {};
+        if (!memory.global.pendingByLead || typeof memory.global.pendingByLead !== "object") {
+            memory.global.pendingByLead = {};
+        }
+        ensureRelia2TourState(memory);
+        loadPendingFromMemory(memory);
         hydrated = true;
         return memory;
     })();
@@ -221,6 +296,7 @@ export function getUsageMemory() {
 
 export async function flushUsageMemory() {
     if (!dirty || !memory) return;
+    syncPendingToMemory(memory);
     memory.updatedAt = new Date().toISOString();
     const payload = JSON.stringify(memory);
     dirty = false;
@@ -425,6 +501,7 @@ export function trackCrmAction(action, stateBefore, stateAfter) {
         meta: summarizeActionMeta(action),
     });
 
+    syncPendingToMemory(mem);
     scheduleSave();
 }
 
@@ -543,7 +620,10 @@ export function getLearnedRecoOverrides(workspaceId) {
 
     const totalActions = Object.values(g.actionCounts || {}).reduce((s, n) => s + n, 0)
         + (ws?.actions || 0);
-    const confidence = Math.min(1, totalActions / 80);
+    const sampleN = (g.samples?.nrpToFollowupHours?.length || 0)
+        + (g.samples?.reachedToRdvHours?.length || 0);
+    // Gestes + échantillons de délais → confiance un peu plus tôt
+    const confidence = Math.min(1, totalActions / 80 + sampleN * 0.04);
 
     /** @type {Partial<import('./recoProfile').RecoProfile>} */
     const patch = {};
@@ -619,6 +699,32 @@ export function learnedKindBoost(kind, workspaceId) {
     return 0;
 }
 
+/**
+ * Jours de relance post-joint : appris → profil niche → défaut 2.
+ * @param {object} [workspace]
+ * @returns {number} 1–7
+ */
+export function getSuggestedRelanceDays(workspace) {
+    const learned = getLearnedRecoOverrides(workspace?.id);
+    if (learned.rdvAfterJointDays != null && learned.confidence >= 0.12) {
+        return Math.min(7, Math.max(1, Number(learned.rdvAfterJointDays) || 2));
+    }
+    const days = getWorkspaceRecoProfile(workspace)?.rdvAfterJointDays;
+    if (Number.isFinite(days) && days >= 1) return Math.min(7, Math.max(1, days));
+    return 2;
+}
+
+/**
+ * Heure préférée apprise (8–19) pour defaults de rappel.
+ * @param {string} [workspaceId]
+ * @returns {number|null}
+ */
+export function getLearnedPreferredHour(workspaceId) {
+    const { peakHour: peak, confidence } = getLearnedRecoOverrides(workspaceId);
+    if (peak == null || confidence < 0.12) return null;
+    return Math.min(BUSINESS_HOUR_MAX, Math.max(BUSINESS_HOUR_MIN, peak));
+}
+
 /** Flush à la fermeture / background. */
 export function installUsageMemoryLifecycle() {
     hydrateUsageMemory().catch(() => {});
@@ -629,4 +735,41 @@ export function installUsageMemoryLifecycle() {
     document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") flush();
     });
+}
+
+/** Relia 2 — tour guidé déjà terminé ? */
+export function isRelia2FeatureTourCompleted() {
+    const mem = memory || createEmptyMemory();
+    return !!ensureRelia2TourState(mem).completed;
+}
+
+/** Relia 2 — feature déjà vue ? */
+export function isRelia2FeatureSeen(featureId) {
+    if (!featureId) return false;
+    const mem = memory || createEmptyMemory();
+    const tour = ensureRelia2TourState(mem);
+    return !!tour.seenFeatures[featureId];
+}
+
+/** Relia 2 — marque une feature comme vue. */
+export function markRelia2FeatureSeen(featureId) {
+    if (!featureId) return;
+    if (!memory) memory = createEmptyMemory();
+    const tour = ensureRelia2TourState(memory);
+    if (tour.seenFeatures[featureId]) return;
+    tour.seenFeatures[featureId] = true;
+    if (tour.status === "not_started") tour.status = "in_progress";
+    scheduleSave();
+    void flushUsageMemory();
+}
+
+/** Relia 2 — marque le tour comme terminé (persistant, une seule fois). */
+export function markRelia2FeatureTourCompleted() {
+    if (!memory) memory = createEmptyMemory();
+    const tour = ensureRelia2TourState(memory);
+    tour.status = "completed";
+    tour.completed = true;
+    tour.completedAt = new Date().toISOString();
+    scheduleSave();
+    void flushUsageMemory();
 }

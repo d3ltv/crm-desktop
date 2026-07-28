@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import {
     Plus, LayoutGrid, Trash2, Users, Trophy,
     ChevronRight, Briefcase, Target, Activity,
-    Clock3, Zap, Download, Upload, Search, RefreshCw,
+    Clock3, Zap, Download, Upload, Search, RefreshCw, Globe,
 } from "lucide-react";
 import { CreateWorkspaceDialog } from "./CreateWorkspaceDialog";
 import { ThemeToggle } from "./ThemeToggle";
@@ -21,8 +21,9 @@ import {
 } from "@/lib/statsUtils";
 import { countUnreadWorkspaceNotifs } from "@/lib/followupNotifs";
 import { useNotifSeenMap } from "@/hooks/useNotifSeenMap";
-import { getBestProspectingSlot } from "@/lib/prospectingSlots";
+import { getHomeBrief } from "@/lib/reliaBrain";
 import { CrmCalendar } from "./CrmCalendar";
+import { isRelia2Export, PRODUCT_DISPLAY_NAME } from "@/lib/reliaVariant";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -423,7 +424,7 @@ export const WorkspacesPage = () => {
     const isEmpty = workspaces.length === 0;
 
     const prospectingSlot = useMemo(
-        () => (isEmpty ? null : getBestProspectingSlot(workspaces)),
+        () => (isEmpty ? null : getHomeBrief(workspaces).slot),
         [workspaces, isEmpty]
     );
 
@@ -511,23 +512,25 @@ export const WorkspacesPage = () => {
                 <div className="flex items-center gap-1.5 ml-auto shrink-0">
                     {!isEmpty && <GlobalNotifBell />}
                     <ThemeToggle />
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={handleImportBackup}
+                        className="h-8 w-8 rounded-lg text-muted-foreground"
+                        title="Importer un JSON (ajoute sans écraser)"
+                        data-testid="home-import-backup-btn"
+                    >
+                        <Upload size={14} />
+                    </Button>
                     {!isEmpty && (
                         <>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={handleImportBackup}
-                                className="h-8 w-8 rounded-lg text-muted-foreground"
-                                title="Restaurer un backup"
-                            >
-                                <Upload size={14} />
-                            </Button>
                             <Button
                                 variant="ghost"
                                 size="icon"
                                 onClick={exportBackup}
                                 className="h-8 w-8 rounded-lg text-muted-foreground"
                                 title="Exporter un backup JSON"
+                                data-testid="home-export-backup-btn"
                             >
                                 <Download size={14} />
                             </Button>
@@ -559,7 +562,10 @@ export const WorkspacesPage = () => {
         return (
             <div className="min-h-screen bg-background" data-testid="workspaces-page">
                 {nav}
-                <OnboardingHero onCreate={() => setOpen(true)} />
+                <OnboardingHero
+                onCreate={() => setOpen(true)}
+                onImport={handleImportBackup}
+            />
                 <CreateWorkspaceDialog open={open} onOpenChange={setOpen} />
             </div>
         );
@@ -582,6 +588,9 @@ export const WorkspacesPage = () => {
                         <span>
                             Créneau à prioriser :{" "}
                             <span className="font-medium text-foreground">{prospectingSlot.shortLabel}</span>
+                            {!prospectingSlot.available && (
+                                <span> — continuez vos appels</span>
+                            )}
                         </span>
                     </div>
                 )}
@@ -708,17 +717,18 @@ export const WorkspacesPage = () => {
 };
 
 // ── Onboarding ────────────────────────────────────────────────────────────────
-const OnboardingHero = ({ onCreate }) => (
+const OnboardingHero = ({ onCreate, onImport }) => (
     <div className="max-w-2xl mx-auto px-4 py-20 sm:py-32 flex flex-col items-center text-center">
         <div className="w-16 h-16 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-6">
             <Target size={28} strokeWidth={1.5} />
         </div>
         <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-3">
-            Bienvenue dans Relia
+            {isRelia2Export ? `Bienvenue dans ${PRODUCT_DISPLAY_NAME}` : "Bienvenue dans Relia"}
         </h1>
         <p className="text-muted-foreground text-base mb-8 max-w-md">
-            Créez votre premier espace pour organiser vos leads ou candidatures sur un tableau
-            Kanban. Tout est sauvegardé localement sur votre Mac.
+            {isRelia2Export
+                ? "Créez votre premier espace pour organiser vos leads sur un tableau Kanban. Le site web du prospect est mis en avant — tout est sauvegardé localement sur votre Mac."
+                : "Créez votre premier espace, ou importez un backup JSON pour retrouver vos leads. Tout est sauvegardé localement sur votre Mac."}
         </p>
         <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
             <Button
@@ -729,14 +739,32 @@ const OnboardingHero = ({ onCreate }) => (
                 <Plus size={16} />
                 Créer un espace
             </Button>
+            {!isRelia2Export && (
+                <Button
+                    type="button"
+                    variant="outline"
+                    data-testid="import-first-backup-btn"
+                    onClick={onImport}
+                    className="h-11 rounded-xl px-6 text-[14px] font-medium gap-2"
+                >
+                    <Upload size={16} />
+                    Importer un JSON
+                </Button>
+            )}
         </div>
         <div className="mt-8 flex items-center gap-6 text-[12px] text-muted-foreground">
             <div className="flex items-center gap-1.5">
                 <Users size={13} /> Suivi prospects
             </div>
-            <div className="flex items-center gap-1.5">
-                <Briefcase size={13} /> Offres d&apos;emploi
-            </div>
+            {isRelia2Export ? (
+                <div className="flex items-center gap-1.5">
+                    <Globe size={13} /> Site web mis en avant
+                </div>
+            ) : (
+                <div className="flex items-center gap-1.5">
+                    <Briefcase size={13} /> Offres d&apos;emploi
+                </div>
+            )}
             <div className="flex items-center gap-1.5">
                 <Trophy size={13} /> Pipeline deals
             </div>
