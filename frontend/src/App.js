@@ -8,7 +8,7 @@ import { CrashRecovery } from "@/components/CrashRecovery";
 import { Relia2FeatureTour } from "@/components/Relia2FeatureTour";
 import { AppUpdateBanner } from "@/components/AppUpdateBanner";
 import { ReliaConsoleApp } from "@/components/ReliaConsoleApp";
-import { isReliaConsole } from "@/lib/reliaVariant";
+import { isReliaConsole, isRelia2Export } from "@/lib/reliaVariant";
 import { Toaster } from "sonner";
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -33,7 +33,8 @@ function Router() {
             {state.currentId ? <WorkspacePage /> : <WorkspacesPage />}
             {/* Relia 2 export-only — assistant proactif (no-op hors variant) */}
             <Relia2FeatureTour />
-            <AppUpdateBanner />
+            {/* MAJ auto = canal Rellia uniquement (pas Relia perso) */}
+            {isRelia2Export ? <AppUpdateBanner /> : null}
         </>
     );
 }

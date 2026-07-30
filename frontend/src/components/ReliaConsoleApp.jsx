@@ -2,7 +2,7 @@
  * Relia Console — cockpit publish / rollback (GitHub official.json).
  * Identifier local.relia.console → data séparées du CRM.
  */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Download, RotateCcw, KeyRound, RefreshCw, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -12,22 +12,48 @@ import {
     saveGithubToken,
     fetchOfficialStatus,
     listVersionReleases,
+    listSemverTags,
+    buildPublishVersionChoices,
     RELIA_UPDATE_REPO,
     OFFICIAL_JSON_URL,
 } from "@/lib/consoleGithub";
+
+const DEFAULT_RELLIA_APP = "/Volumes/disque dur externe 1/Rellia.app";
+const PREF_APP_PATH = "relia_console_rellia_app_path";
+
+function loadAppPath() {
+    try {
+        return localStorage.getItem(PREF_APP_PATH) || DEFAULT_RELLIA_APP;
+    } catch {
+        return DEFAULT_RELLIA_APP;
+    }
+}
 
 export function ReliaConsoleApp() {
     const [token, setToken] = useState(() => loadGithubToken());
     const [tokenDraft, setTokenDraft] = useState(() => loadGithubToken());
     const [official, setOfficial] = useState(null);
     const [releases, setReleases] = useState([]);
+    const [tags, setTags] = useState([]);
     const [notes, setNotes] = useState("");
     const [versionBump, setVersionBump] = useState("");
     const [rollbackVersion, setRollbackVersion] = useState("");
+    const [appPath, setAppPath] = useState(() => loadAppPath());
+    const [publishMode, setPublishMode] = useState("app");
     const [log, setLog] = useState("");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [loadingMeta, setLoadingMeta] = useState(false);
+
+    const publishChoices = useMemo(
+        () =>
+            buildPublishVersionChoices({
+                officialVersion: official?.version || null,
+                releaseVersions: releases.map((r) => r.version),
+                tagVersions: tags.map((t) => t.version),
+            }),
+        [official, releases, tags]
+    );
 
     const refresh = useCallback(async () => {
         setLoadingMeta(true);
@@ -35,19 +61,51 @@ export function ReliaConsoleApp() {
         try {
             const off = await fetchOfficialStatus(token || undefined);
             setOfficial(off);
-            if (!versionBump) setVersionBump(off.version || "");
+
+            let nextReleases = [];
+            let nextTags = [];
             if (token) {
-                const list = await listVersionReleases(token);
-                setReleases(list);
-                if (!rollbackVersion && list[0]) setRollbackVersion(list[0].version);
+                try {
+                    nextReleases = await listVersionReleases(token);
+                    setReleases(nextReleases);
+                    if (nextReleases[0]) {
+                        setRollbackVersion((prev) => prev || nextReleases[0].version);
+                    }
+                } catch (listErr) {
+                    setReleases([]);
+                    console.warn("[Console] list releases:", listErr);
+                }
+                try {
+                    nextTags = await listSemverTags(token);
+                    setTags(nextTags);
+                } catch (tagErr) {
+                    setTags([]);
+                    console.warn("[Console] list tags:", tagErr);
+                }
+            } else {
+                setReleases([]);
+                setTags([]);
             }
+
+            const choices = buildPublishVersionChoices({
+                officialVersion: off?.version || null,
+                releaseVersions: nextReleases.map((r) => r.version),
+                tagVersions: nextTags.map((t) => t.version),
+            });
+            setVersionBump((prev) => {
+                const stillValid =
+                    prev &&
+                    (choices.suggestions.some((s) => s.version === prev) ||
+                        choices.existing.some((e) => e.version === prev));
+                return stillValid ? prev : choices.defaultVersion;
+            });
         } catch (err) {
             setOfficial(null);
             setError(err?.message ? String(err.message) : "Erreur lecture canal officiel");
         } finally {
             setLoadingMeta(false);
         }
-    }, [token, versionBump, rollbackVersion]);
+    }, [token]);
 
     useEffect(() => {
         refresh();
@@ -66,6 +124,11 @@ export function ReliaConsoleApp() {
             setError("Relia Console doit tourner en app desktop (yarn desktop:console).");
             return;
         }
+        try {
+            localStorage.setItem(PREF_APP_PATH, appPath.trim());
+        } catch {
+            /* */
+        }
         setBusy(true);
         setError("");
         setLog(`→ ${script}…`);
@@ -75,6 +138,8 @@ export function ReliaConsoleApp() {
                 args,
                 githubToken: token || null,
                 setVersion: setVersion || null,
+                appPath: publishMode === "app" ? appPath.trim() : null,
+                publishMode: script === "publish-update.sh" ? publishMode : null,
             });
             setLog(String(out || "OK"));
             await refresh();
@@ -88,8 +153,12 @@ export function ReliaConsoleApp() {
     };
 
     const handlePublish = () => {
-        const n = notes.trim() || `Mise à jour Relia ${versionBump || ""}`.trim();
-        runScript("publish-update.sh", [n], versionBump.trim() || null);
+        if (!versionBump) {
+            setError("Choisis une version dans la liste.");
+            return;
+        }
+        const n = notes.trim() || `Mise à jour Rellia ${versionBump}`.trim();
+        runScript("publish-update.sh", [n], versionBump);
     };
 
     const handleRollback = () => {
@@ -98,9 +167,13 @@ export function ReliaConsoleApp() {
             setError("Choisis une version à restaurer.");
             return;
         }
-        const n = notes.trim() || `Retour à Relia ${v}`;
+        const n = notes.trim() || `Retour à Rellia ${v}`;
         runScript("set-official.sh", [v, n], null);
     };
+
+    const selectedIsExisting = publishChoices.existing.some(
+        (e) => e.version === versionBump && e.published
+    );
 
     return (
         <div className="min-h-screen bg-background text-foreground">
@@ -109,17 +182,16 @@ export function ReliaConsoleApp() {
                     Relia Console
                 </p>
                 <h1 className="mt-1 text-[22px] font-semibold tracking-tight">
-                    Canal officiel
+                    Canal officiel Rellia
                 </h1>
                 <p className="mt-1 text-[13px] text-muted-foreground max-w-xl leading-relaxed">
-                    Publie une build ou repointe vers une ancienne version. Les clients Relia
-                    s’alignent au démarrage. Repo{" "}
+                    Publie la build <span className="text-foreground">Rellia</span> (partageable),
+                    pas ta Relia perso. Les clients Rellia s’alignent au démarrage. Repo{" "}
                     <span className="tabular-nums text-foreground/80">{RELIA_UPDATE_REPO}</span>.
                 </p>
             </header>
 
             <main className="mx-auto max-w-xl px-6 py-6 flex flex-col gap-6">
-                {/* Token */}
                 <section className="rounded-2xl border border-border/60 bg-card p-4">
                     <div className="flex items-center gap-2 text-[13px] font-medium">
                         <KeyRound className="h-4 w-4 text-primary" />
@@ -146,7 +218,6 @@ export function ReliaConsoleApp() {
                     </button>
                 </section>
 
-                {/* Status */}
                 <section className="rounded-2xl border border-border/60 bg-card p-4">
                     <div className="flex items-center justify-between gap-2">
                         <p className="text-[13px] font-medium">Version officielle</p>
@@ -165,22 +236,28 @@ export function ReliaConsoleApp() {
                             <p className="text-[28px] font-semibold tabular-nums tracking-tight">
                                 {official.version}
                             </p>
-                            <p className="text-[12px] text-muted-foreground mt-1">
+                            <p className="mt-1 text-[12px] text-muted-foreground">
                                 {official.reason === "rollback" ? "Rollback · " : ""}
                                 {official.notes || "—"}
                             </p>
                         </div>
                     ) : (
-                        <p className="mt-2 text-[13px] text-muted-foreground">
-                            Aucun pointeur (crée-le en publiant une première version).
-                        </p>
+                        <div className="mt-2 space-y-1">
+                            <p className="text-[15px] font-medium text-foreground">
+                                Pas encore de canal officiel
+                            </p>
+                            <p className="text-[13px] text-muted-foreground leading-relaxed">
+                                Choisis une version dans la liste puis{" "}
+                                <span className="text-foreground">Publier sur GitHub</span> — ça
+                                créera la release <code className="text-[11px]">official</code>.
+                            </p>
+                        </div>
                     )}
                     <p className="mt-3 text-[11px] text-muted-foreground break-all">
                         {OFFICIAL_JSON_URL}
                     </p>
                 </section>
 
-                {/* Notes */}
                 <section className="rounded-2xl border border-border/60 bg-card p-4">
                     <label className="text-[13px] font-medium">Notes (affichées dans Relia)</label>
                     <textarea
@@ -192,28 +269,79 @@ export function ReliaConsoleApp() {
                     />
                 </section>
 
-                {/* Publish */}
                 <section className="rounded-2xl border border-border/60 bg-card p-4">
                     <div className="flex items-center gap-2 text-[13px] font-medium">
                         <Download className="h-4 w-4 text-primary" />
-                        Publier la version du jour
+                        Publier Rellia
                     </div>
                     <p className="mt-1 text-[12px] text-muted-foreground">
-                        Build local signé → GitHub tag vX.Y.Z → pointeur official. Peut prendre
-                        plusieurs minutes.
+                        Source = ton <span className="text-foreground">Rellia.app</span> sur le SSD
+                        (ou rebuild whisper). Ta Relia perso n’est pas touchée.
                     </p>
+
+                    <label className="mt-3 block text-[12px] text-muted-foreground">
+                        Source
+                    </label>
+                    <select
+                        value={publishMode}
+                        onChange={(e) => setPublishMode(e.target.value)}
+                        className="mt-1 w-full h-9 rounded-xl border border-border bg-background px-3 text-[13px] outline-none focus:ring-2 focus:ring-primary/30"
+                    >
+                        <option value="app">Rellia.app sur le SSD (recommandé)</option>
+                        <option value="build">Rebuild depuis le code (whisper SSD)</option>
+                    </select>
+
+                    {publishMode === "app" ? (
+                        <>
+                            <label className="mt-3 block text-[12px] text-muted-foreground">
+                                Chemin Rellia.app
+                            </label>
+                            <input
+                                value={appPath}
+                                onChange={(e) => setAppPath(e.target.value)}
+                                className="mt-1 w-full h-9 rounded-xl border border-border bg-background px-3 text-[12px] outline-none focus:ring-2 focus:ring-primary/30"
+                            />
+                        </>
+                    ) : null}
+
                     <label className="mt-3 block text-[12px] text-muted-foreground">
                         Version à publier
                     </label>
-                    <input
+                    <select
                         value={versionBump}
                         onChange={(e) => setVersionBump(e.target.value)}
-                        placeholder="0.1.1"
                         className="mt-1 w-full h-9 rounded-xl border border-border bg-background px-3 text-[13px] tabular-nums outline-none focus:ring-2 focus:ring-primary/30"
-                    />
+                    >
+                        <optgroup label="Nouvelle version">
+                            {publishChoices.suggestions.map((s) => (
+                                <option key={`s-${s.version}`} value={s.version}>
+                                    {s.label}
+                                </option>
+                            ))}
+                        </optgroup>
+                        {publishChoices.existing.length > 0 ? (
+                            <optgroup label="Tags / releases GitHub">
+                                {publishChoices.existing.map((e) => (
+                                    <option key={`e-${e.version}`} value={e.version}>
+                                        {e.label}
+                                    </option>
+                                ))}
+                            </optgroup>
+                        ) : null}
+                    </select>
+                    {selectedIsExisting ? (
+                        <p className="mt-2 text-[12px] text-amber-600 dark:text-amber-400">
+                            Cette version existe déjà sur GitHub : republier écrasera ses assets.
+                        </p>
+                    ) : null}
+                    {!token ? (
+                        <p className="mt-2 text-[12px] text-muted-foreground">
+                            Enregistre un PAT pour charger les tags GitHub dans la liste.
+                        </p>
+                    ) : null}
                     <button
                         type="button"
-                        disabled={busy || !versionBump.trim()}
+                        disabled={busy || !versionBump}
                         onClick={handlePublish}
                         className={cn(
                             "mt-3 inline-flex h-9 items-center justify-center rounded-full px-4",
@@ -227,30 +355,28 @@ export function ReliaConsoleApp() {
                                 En cours…
                             </>
                         ) : (
-                            "Publier sur GitHub"
+                            `Publier Rellia v${versionBump || "…"}`
                         )}
                     </button>
                 </section>
 
-                {/* Rollback */}
                 <section className="rounded-2xl border border-border/60 bg-card p-4">
                     <div className="flex items-center gap-2 text-[13px] font-medium">
                         <RotateCcw className="h-4 w-4 text-primary" />
                         Rollback (sans rebuild)
                     </div>
                     <p className="mt-1 text-[12px] text-muted-foreground">
-                        Repointe official.json vers une archive déjà uploadée. Les Relia verront
-                        « Retour à une version précédente » au prochain démarrage.
+                        Repointe official.json vers une archive déjà uploadée.
                     </p>
                     <select
                         value={rollbackVersion}
                         onChange={(e) => setRollbackVersion(e.target.value)}
-                        className="mt-3 w-full h-9 rounded-xl border border-border bg-background px-3 text-[13px] outline-none focus:ring-2 focus:ring-primary/30"
+                        className="mt-3 w-full h-9 rounded-xl border border-border bg-background px-3 text-[13px] tabular-nums outline-none focus:ring-2 focus:ring-primary/30"
                     >
-                        <option value="">— choisir —</option>
+                        <option value="">— choisir une release —</option>
                         {releases.map((r) => (
                             <option key={r.tag} value={r.version}>
-                                {r.version}
+                                {r.tag}
                                 {official?.version === r.version ? " (officiel)" : ""}
                             </option>
                         ))}

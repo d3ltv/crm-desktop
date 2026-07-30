@@ -78,6 +78,29 @@ export function compareSemver(a, b) {
     return 0;
 }
 
+/** Plus haute version semver parmi une liste. */
+export function maxSemver(...versions) {
+    const list = versions.map(normalizeVersion).filter(Boolean);
+    if (!list.length) return "0.0.0";
+    return list.reduce((best, cur) => (compareSemver(cur, best) > 0 ? cur : best));
+}
+
+/**
+ * @param {string} version
+ * @param {"patch" | "minor" | "major"} kind
+ */
+export function bumpSemver(version, kind) {
+    const parts = normalizeVersion(version || "0.0.0")
+        .split(".")
+        .map((n) => parseInt(n, 10) || 0);
+    const maj = parts[0] || 0;
+    const min = parts[1] || 0;
+    const pat = parts[2] || 0;
+    if (kind === "major") return `${maj + 1}.0.0`;
+    if (kind === "minor") return `${maj}.${min + 1}.0`;
+    return `${maj}.${min}.${pat + 1}`;
+}
+
 export function alignReason(localVersion, officialVersion, declaredReason) {
     if (declaredReason === "rollback") return "rollback";
     const cmp = compareSemver(officialVersion, localVersion);

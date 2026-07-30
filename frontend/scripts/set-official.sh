@@ -33,7 +33,9 @@ echo "→ Lecture assets de $TAG…"
 ASSETS_JSON="$(gh release view "$TAG" --repo "$REPO" --json assets)"
 ASSET_NAME="$(node -e '
 const j = JSON.parse(process.argv[1]);
-const tar = (j.assets || []).find((a) => /\.app\.tar\.gz$/i.test(a.name) && !/\.sig$/i.test(a.name));
+const tar = (j.assets || []).find((a) =>
+  /\.app\.tar\.gz$/i.test(a.name) && !/\.sig$/i.test(a.name) && /Rellia|Relia/i.test(a.name)
+) || (j.assets || []).find((a) => /\.app\.tar\.gz$/i.test(a.name) && !/\.sig$/i.test(a.name));
 if (!tar) { console.error("Aucune archive .app.tar.gz sur " + process.argv[2]); process.exit(1); }
 process.stdout.write(tar.name);
 ' "$ASSETS_JSON" "$TAG")"

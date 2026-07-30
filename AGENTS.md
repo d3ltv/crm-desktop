@@ -234,7 +234,7 @@ Cartes au repos : **plates** (bordure fine, pas d’ombre lourde). Glass / blur 
 | Transcription | `transcribeLocal.js` | Whisper **local** `@xenova/transformers` · `whisper-base` (~75 Mo) · offline après 1er DL |
 | Notifs OS | `desktopNotifications.js` | Follow-ups ; cooldown ~30 min / item |
 | Auto history | Rust | Snapshots périodiques dans `backups/` |
-| **Mises à jour** | `appUpdates.js` + `align.rs` + Relia Console | Pointeur `official.json` (release GitHub `official`) ; alignement au démarrage (upgrade **ou** rollback) ; data hors bundle |
+| **Mises à jour** | `appUpdates.js` + Relia Console | Canal **Rellia** uniquement (`official.json`). Relia perso = pas d’auto-update. Publish depuis `Rellia.app` SSD ou rebuild whisper. |
 
 Fenêtre : 1440×900, min 1024×680 (`tauri.conf.json`).
 

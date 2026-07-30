@@ -347,6 +347,8 @@ fn crm_console_run_script(
     args: Vec<String>,
     github_token: Option<String>,
     set_version: Option<String>,
+    app_path: Option<String>,
+    publish_mode: Option<String>,
 ) -> Result<String, String> {
     let allowed = ["publish-update.sh", "set-official.sh"];
     if !allowed.contains(&script.as_str()) {
@@ -401,6 +403,12 @@ fn crm_console_run_script(
     }
     if let Some(ver) = set_version.filter(|v| !v.trim().is_empty()) {
         cmd.env("RELIA_SET_VERSION", ver.trim().trim_start_matches('v'));
+    }
+    if let Some(path) = app_path.filter(|p| !p.trim().is_empty()) {
+        cmd.env("RELIA_APP_PATH", path.trim());
+    }
+    if let Some(mode) = publish_mode.filter(|m| !m.trim().is_empty()) {
+        cmd.env("RELIA_PUBLISH_MODE", mode.trim());
     }
     if key_path.is_file() {
         cmd.env(
