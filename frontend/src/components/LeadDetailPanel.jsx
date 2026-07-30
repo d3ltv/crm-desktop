@@ -64,6 +64,7 @@ import {
 } from "@/lib/dateUtils";
 import { allocateMainDupeLabels, isMainFieldDuplicateLabel } from "@/lib/customFields";
 import { telHref, mailtoHref, websiteHref } from "@/lib/actionLinks";
+import { suppressCallNoteModal } from "@/lib/reliaShortcuts";
 import { parseNote, detectAppointment, diffWithLead, formatDetected } from "@/lib/noteParser";
 import { isManualRdv, isSuggestedRelance, makeRdvNextAction } from "@/lib/nextActionUtils";
 import { AddToCalendarDialog, ConfirmSuggestedRelanceButton, QuickScheduleButton, QuickScheduleForm } from "./AddToCalendarDialog";
@@ -98,6 +99,7 @@ import { AgencySuspectBadge, AGENCY_NAME_CLS } from "./AgencySuspectBadge";
 import { LeadAvatar } from "./LeadAvatar";
 import { useRecoDayTick } from "@/hooks/useNotifSeenMap";
 import { isRelia2Export } from "@/lib/reliaVariant";
+import { resolvePipelineColumnId } from "@/lib/pipelineRoles";
 
 const SECTION_ICONS = { Database, User, MessageSquare, Repeat2, Tag, Trophy, History, CalendarClock, Mic };
 
@@ -144,9 +146,28 @@ const RelancesWidget = ({ lead, workspace, dispatch }) => {
     const nextNum = relances.length + 1;
     const maxRelances = 7;
     const atMax = relances.length >= maxRelances;
+    const isPasteCanal = canal === "Email" || canal === "LinkedIn";
+    const pastePlaceholder = canal === "LinkedIn"
+        ? "Coller le message LinkedIn…"
+        : "Coller l'email envoyé…";
 
     const handleLog = () => {
         if (atMax) return;
+        const contactedId = resolvePipelineColumnId(workspace, "contacted");
+        const wonId = resolvePipelineColumnId(workspace, "won");
+        const lostId = resolvePipelineColumnId(workspace, "lost");
+        const isTerminal =
+            (wonId && lead.columnId === wonId) || (lostId && lead.columnId === lostId);
+        const willMove =
+            !!contactedId
+            && lead.columnId !== contactedId
+            && !isTerminal;
+        const contactedName = contactedId
+            ? (workspace.columns?.[contactedId]?.name || "Contacté")
+            : "Contacté";
+
+        // Déjà une note de relance → ne pas ouvrir Joint/NRP au passage Contacté
+        suppressCallNoteModal(lead.id);
         dispatch({
             type: "LOG_RELANCE",
             workspaceId: workspace.id,
@@ -154,7 +175,11 @@ const RelancesWidget = ({ lead, workspace, dispatch }) => {
             canal,
             note: note.trim(),
         });
-        toast.success(`Relance #${nextNum} · ${canal}`);
+        toast.success(
+            willMove
+                ? `Relance #${nextNum} · ${canal} → ${contactedName}`
+                : `Relance #${nextNum} · ${canal}`
+        );
         setNote("");
         setAdding(false);
     };
@@ -201,17 +226,30 @@ const RelancesWidget = ({ lead, workspace, dispatch }) => {
                     )}
                 </div>
                 {!atMax ? (
-                    <button
-                        type="button"
-                        onClick={() => setAdding((v) => !v)}
-                        className={`h-6 px-2 rounded-md text-[11px] font-medium transition-colors ${
-                            adding
-                                ? "bg-secondary text-foreground"
-                                : "bg-primary/10 text-primary hover:bg-primary/15"
-                        }`}
-                    >
-                        {adding ? "Annuler" : `+ #${nextNum}`}
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setAdding(true);
+                                setCanal("Email");
+                            }}
+                            className="h-6 px-2 rounded-md text-[11px] font-medium bg-primary/10 text-primary hover:bg-primary/15 transition-colors"
+                            title="Email envoyé"
+                        >
+                            Email
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setAdding((v) => !v)}
+                            className={`h-6 px-2 rounded-md text-[11px] font-medium transition-colors ${
+                                adding
+                                    ? "bg-secondary text-foreground"
+                                    : "bg-primary/10 text-primary hover:bg-primary/15"
+                            }`}
+                        >
+                            {adding ? "Annuler" : `+ #${nextNum}`}
+                        </button>
+                    </div>
                 ) : (
                     <span className="text-[10px] text-muted-foreground">Max</span>
                 )}
@@ -235,23 +273,44 @@ const RelancesWidget = ({ lead, workspace, dispatch }) => {
                             </button>
                         ))}
                     </div>
-                    <div className="flex gap-1.5">
-                        <input
-                            type="text"
-                            value={note}
-                            onChange={(e) => setNote(e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && handleLog()}
-                            placeholder="Note (optionnel)"
-                            className="flex-1 h-7 px-2 rounded-md border border-border bg-background text-[12px] focus:outline-none focus:ring-1 focus:ring-primary"
-                        />
-                        <button
-                            type="button"
-                            onClick={handleLog}
-                            className="h-7 px-2.5 rounded-md text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
-                        >
-                            OK
-                        </button>
-                    </div>
+                    {isPasteCanal ? (
+                        <div className="space-y-1.5">
+                            <textarea
+                                value={note}
+                                onChange={(e) => setNote(e.target.value)}
+                                placeholder={pastePlaceholder}
+                                rows={5}
+                                className="w-full min-h-[96px] px-2.5 py-2 rounded-md border border-border bg-background text-[12px] leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                            <div className="flex justify-end">
+                                <button
+                                    type="button"
+                                    onClick={handleLog}
+                                    className="h-7 px-2.5 rounded-md text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+                                >
+                                    OK
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="flex gap-1.5">
+                            <input
+                                type="text"
+                                value={note}
+                                onChange={(e) => setNote(e.target.value)}
+                                onKeyDown={(e) => e.key === "Enter" && handleLog()}
+                                placeholder="Note (optionnel)"
+                                className="flex-1 h-7 px-2 rounded-md border border-border bg-background text-[12px] focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                            <button
+                                type="button"
+                                onClick={handleLog}
+                                className="h-7 px-2.5 rounded-md text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+                            >
+                                OK
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -260,26 +319,32 @@ const RelancesWidget = ({ lead, workspace, dispatch }) => {
                     {[...relances].reverse().map((r) => (
                         <li
                             key={r.id}
-                            className="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-muted/40 group text-[12px]"
+                            className="flex items-start gap-2 px-1.5 py-1 rounded-md hover:bg-muted/40 group text-[12px]"
                         >
-                            <span className={`w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold shrink-0 ${getRelanceColor(r.num).bg} ${getRelanceColor(r.num).text}`}>
+                            <span className={`w-4 h-4 mt-0.5 rounded flex items-center justify-center text-[9px] font-bold shrink-0 ${getRelanceColor(r.num).bg} ${getRelanceColor(r.num).text}`}>
                                 {r.num}
                             </span>
-                            <span className="font-medium text-foreground truncate">{r.canal}</span>
-                            {r.note && (
-                                <span className="text-muted-foreground truncate">· {r.note}</span>
-                            )}
-                            <span className="ml-auto text-[10px] text-muted-foreground shrink-0 tabular-nums">
-                                {new Date(r.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
-                            </span>
-                            <button
-                                type="button"
-                                onClick={() => handleDelete(r.id)}
-                                className="opacity-0 group-hover:opacity-70 hover:!opacity-100 text-muted-foreground hover:text-rose-500"
-                                title="Supprimer"
-                            >
-                                <X size={11} />
-                            </button>
+                            <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                    <span className="font-medium text-foreground truncate">{r.canal}</span>
+                                    <span className="ml-auto text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                                        {new Date(r.at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleDelete(r.id)}
+                                        className="opacity-0 group-hover:opacity-70 hover:!opacity-100 text-muted-foreground hover:text-rose-500"
+                                        title="Supprimer"
+                                    >
+                                        <X size={11} />
+                                    </button>
+                                </div>
+                                {r.note && (
+                                    <p className="text-muted-foreground mt-0.5 whitespace-pre-wrap break-words line-clamp-4">
+                                        {r.note}
+                                    </p>
+                                )}
+                            </div>
                         </li>
                     ))}
                 </ul>
@@ -344,6 +409,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const [briefLinksOpen, setBriefLinksOpen] = useState(false);
     const [editingCalendar, setEditingCalendar] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [emailSentOpen, setEmailSentOpen] = useState(false);
+    const [emailSentBody, setEmailSentBody] = useState("");
     const panelRef = useRef(null);
     // Use the live lead from props directly — parent computes it from state.
     const local = lead;
@@ -400,6 +467,8 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         setCfValue("");
         setBriefLinksOpen(false);
         setEditingCalendar(false);
+        setEmailSentOpen(false);
+        setEmailSentBody("");
     }, [lead?.id]);
 
     useEffect(() => {
@@ -480,9 +549,15 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         ?? leadIntel?.callDefaults?.relanceDays
         ?? 2;
     const leadRecos = leadIntel?.conseils || [];
+    const relevance = leadIntel?.relevance || null;
+    const relevanceFacts = relevance?.facts || [];
+    const relevanceActions = relevance?.actions || [];
 
     const needsCalendarNudge = useMemo(() => {
         if (!local) return false;
+        // Si la vigilance explique déjà clairement que le lead est "Nouveau jamais traité",
+        // afficher aussi un nudge calendrier "planifiez le premier appel" crée une double info.
+        const hasNouveauStale = inconsistencies.some((i) => i?.id === "nouveau_stale");
         const watchasks = inconsistencies.some(
             (i) => i.action?.type === "plan_rdv"
                 || ["rdv_overdue", "no_answer_gap", "no_answer", "contact_gap", "stale_contact", "nouveau_stale"].includes(i.id)
@@ -493,7 +568,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             || (local.autoFollowup.dueAt && new Date(local.autoFollowup.dueAt).getTime() <= Date.now())
         ));
         const noFutureSlot = !local.nextAction || scheduleOverdue;
-        return noFutureSlot && (watchasks || fuOverdue || scheduleOverdue);
+        return noFutureSlot && (scheduleOverdue || fuOverdue || (!hasNouveauStale && watchasks));
     }, [local, inconsistencies, scheduleOverdue]);
 
     /** Copy du bandeau calendrier : « appeler » si jamais contacté, sinon « rappeler ». */
@@ -587,15 +662,33 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     const brief = extractLeadBrief(local, {
         columnName: workspace.columns[local.columnId]?.name || "",
     });
-    const showBrief = brief.hasBrief || leadRecos.length > 0;
+    const showBrief = brief.hasBrief
+        || leadRecos.length > 0
+        || relevanceFacts.length > 0
+        || relevanceActions.length > 0;
     const { primary: situationPrimary, secondaryLine: situationSecondary } = pickBriefSituation(
         brief.situation || []
     );
     const actionableInsights = (brief.insights || []).filter((i) => i.actionable);
     const appointmentInsights = actionableInsights.filter((i) => i.type === "appointment");
     const otherInsights = actionableInsights.filter((i) => i.type !== "appointment");
-    // Évite le doublon « Suggestion d'appel / Date détectée » (notifs) + chip RDV.
+
+    /** Faits d'appel déjà racontés dans Suivi — une notif clone n'ajoute rien. */
+    const CALL_SITUATION_IDS = new Set([
+        "call-1", "call-n", "call-all-nrp", "call-mix", "call-story", "relance", "relance-today",
+    ]);
+    const situationCoversNrp = situationPrimary && CALL_SITUATION_IDS.has(situationPrimary.id);
+
+    // Hiérarchie du brief :
+    // 1. Suggestion (RDV détecté) = la suite à faire → coupe les « oubli de relance »
+    // 2. Notifications = coaching qui n'est PAS déjà dit par Suggestion / Suivi
+    // 3. Suivi = faits (ce qui s'est passé)
     const briefRecos = leadRecos.filter((item) => {
+        if (appointmentInsights.length > 0) {
+            if (item.kind === "forgot_relance" || item.kind === "channel_switch") return false;
+            if (item.kind === "suggest_rdv") return false;
+        }
+        if (situationCoversNrp && item.kind === "forgot_relance") return false;
         if (item.kind !== "brief_suggestion") return true;
         const key = String(item.key || "");
         if (key.includes("brief_appointment") && appointmentInsights.length > 0) return false;
@@ -651,6 +744,19 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
         if (!ins.applyKey) return;
         patch({ [ins.applyKey]: ins.value });
         toast.success(`${ins.label} enregistré`, { description: ins.value });
+    };
+
+    /** Actions « Informations pertinentes » : uniquement des trous métier (ex. gagné sans montant). */
+    const applyRelevanceAction = (item) => {
+        if (!item || !local) return;
+        if (item.kind === "set_deal_value") {
+            restoreSection("deal");
+            requestAnimationFrame(() => {
+                const input = document.querySelector('[data-testid="lead-deal-value-input"]');
+                input?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                input?.focus();
+            });
+        }
     };
 
     const insightChipLabel = (ins) => {
@@ -922,6 +1028,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
     };
 
     const logContactToday = () => {
+        suppressCallNoteModal(local.id);
         dispatch({
             type: "LOG_CONTACT",
             workspaceId: workspace.id,
@@ -929,6 +1036,25 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
             text: `Contact enregistré depuis « ${workspace.columns[local.columnId]?.name} »`,
         });
         toast.success("Contact du jour enregistré");
+    };
+
+    const logEmailSent = () => {
+        if ((local.relances || []).length >= 7) {
+            toast.error("Maximum de relances atteint");
+            return;
+        }
+        const body = emailSentBody.trim();
+        suppressCallNoteModal(local.id);
+        dispatch({
+            type: "LOG_RELANCE",
+            workspaceId: workspace.id,
+            leadId: local.id,
+            canal: "Email",
+            note: body,
+        });
+        toast.success(body ? "Email envoyé · trace enregistrée" : "Email envoyé");
+        setEmailSentBody("");
+        setEmailSentOpen(false);
     };
 
     const deleteLead = () => {
@@ -1185,6 +1311,87 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                                         </p>
                                     )}
                                 </section>
+                            )}
+
+                            {/* ANALYSE — chiffrée sur les deals de l'utilisateur (reliaBrain) */}
+                            {relevanceFacts.length > 0 && (
+                                <section className="space-y-1" data-testid="lead-brief-analysis">
+                                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Analyse
+                                    </p>
+                                    <div className="space-y-1.5">
+                                        {relevanceFacts.map((fact) => (
+                                            <div key={fact.id} data-testid={`lead-brief-fact-${fact.id}`}>
+                                                <p
+                                                    className={cn(
+                                                        "text-[12.5px] font-semibold leading-snug",
+                                                        fact.tone === "ok" && "text-emerald-800 dark:text-emerald-300",
+                                                        fact.tone === "warn" && "text-amber-900 dark:text-amber-300",
+                                                        (!fact.tone || fact.tone === "neutral") && "text-foreground"
+                                                    )}
+                                                >
+                                                    {fact.label}
+                                                </p>
+                                                {fact.detail && (
+                                                    <p className="text-[11px] text-muted-foreground leading-snug">
+                                                        {fact.detail}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </section>
+                            )}
+
+                            {/* ACTIONS — rare : uniquement un trou métier (ex. gagné sans montant) */}
+                            {relevanceActions.length > 0 && (
+                                <section className="space-y-1.5" data-testid="lead-brief-actions">
+                                    <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Actions
+                                    </p>
+                                    <div className="space-y-1.5">
+                                        {relevanceActions.map((item) => (
+                                            <button
+                                                key={item.id}
+                                                type="button"
+                                                onClick={() => applyRelevanceAction(item)}
+                                                className="w-full rounded-lg border border-border bg-transparent px-2.5 py-2 flex items-start gap-2 text-left hover:bg-muted/40 transition-colors"
+                                                data-testid={`lead-brief-action-${item.kind}`}
+                                            >
+                                                <Euro
+                                                    size={13}
+                                                    strokeWidth={2}
+                                                    className={cn(
+                                                        "shrink-0 mt-0.5",
+                                                        item.tone === "warn"
+                                                            ? "text-amber-600 dark:text-amber-400"
+                                                            : "text-muted-foreground"
+                                                    )}
+                                                />
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="text-[12px] font-semibold leading-snug text-foreground">
+                                                        {item.label}
+                                                    </p>
+                                                    {item.detail && (
+                                                        <p className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                                                            {item.detail}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </section>
+                            )}
+
+                            {/* Pas encore assez de deals chiffrés — on le dit au lieu d'inventer */}
+                            {relevanceFacts.length === 0 && relevance?.learning && (
+                                <p
+                                    className="text-[11px] text-muted-foreground leading-snug"
+                                    data-testid="lead-brief-analysis-learning"
+                                >
+                                    {relevance.learning}
+                                </p>
                             )}
 
                             {/* CONTEXTE — annonce / poste CSV (sans lien) — masqué en Relia 2 */}
@@ -2256,7 +2463,52 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                     />
                 </div>
 
-                <div className="border-t border-border px-5 py-3 flex items-center justify-between gap-2 bg-card rounded-b-xl shrink-0">
+                <div className="border-t border-border px-5 py-3 flex flex-col gap-2 bg-card rounded-b-xl shrink-0">
+                    {emailSentOpen && (
+                        <div className="rounded-lg border border-border bg-muted/20 p-2.5 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-[12px] font-medium text-foreground">Email envoyé</span>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setEmailSentOpen(false);
+                                        setEmailSentBody("");
+                                    }}
+                                    className="text-[11px] text-muted-foreground hover:text-foreground"
+                                >
+                                    Annuler
+                                </button>
+                            </div>
+                            <textarea
+                                value={emailSentBody}
+                                onChange={(e) => setEmailSentBody(e.target.value)}
+                                placeholder="Coller l'email envoyé… (optionnel)"
+                                rows={4}
+                                autoFocus
+                                data-testid="lead-email-sent-paste"
+                                className="w-full min-h-[80px] px-2.5 py-2 rounded-md border border-border bg-background text-[12px] leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                            <div className="flex justify-end gap-1.5">
+                                {local.email && (
+                                    <a
+                                        href={mailtoHref(local.email) || undefined}
+                                        className="h-7 px-2.5 rounded-md text-[11px] font-medium border border-border text-muted-foreground hover:text-foreground hover:bg-muted/60 inline-flex items-center"
+                                    >
+                                        Ouvrir mail
+                                    </a>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={logEmailSent}
+                                    data-testid="lead-email-sent-confirm"
+                                    className="h-7 px-2.5 rounded-md text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+                                >
+                                    Enregistrer
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    <div className="flex items-center justify-between gap-2">
                     <div className="text-xs text-muted-foreground truncate min-w-0">
                         Créé le {formatDateTime(local.createdAt)}
                     </div>
@@ -2300,6 +2552,23 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                         </button>
                         <button
                             type="button"
+                            onClick={() => {
+                                setEmailSentOpen((v) => !v);
+                                if (emailSentOpen) setEmailSentBody("");
+                            }}
+                            data-testid="lead-email-sent-btn"
+                            aria-label="Email envoyé"
+                            title="Email envoyé — coller la trace"
+                            className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                                emailSentOpen
+                                    ? "bg-primary/15 text-primary"
+                                    : "text-primary hover:bg-primary/10"
+                            }`}
+                        >
+                            <Mail size={15} strokeWidth={2.25} />
+                        </button>
+                        <button
+                            type="button"
                             onClick={() => setConfirmDelete(true)}
                             aria-label="Supprimer"
                             title="Supprimer"
@@ -2308,6 +2577,7 @@ export const LeadDetailPanel = ({ open, lead, workspace, onClose }) => {
                         >
                             <Trash2 size={15} />
                         </button>
+                    </div>
                     </div>
                 </div>
             </aside>

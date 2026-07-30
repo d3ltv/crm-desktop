@@ -68,13 +68,22 @@ export function VoiceCallSection({
                 ) : activeHere && voice.status === "ready" ? (
                     <div className="flex items-center gap-3">
                         <p className="text-[13px] font-medium text-foreground min-w-0 flex-1 truncate">
-                            {voice.busyLabel || voice.saving
+                            {voice.saving
                                 ? (voice.busyLabel || "Enregistrement…")
                                 : `Prêt · ${voice.formatDuration(voice.pending?.durationMs || voice.elapsedMs)}`}
                         </p>
-                        {(voice.saving || voice.busyLabel) && (
+                        {voice.saving && (
                             <Loader2 size={14} className="animate-spin text-muted-foreground shrink-0" />
                         )}
+                    </div>
+                ) : voice.transcribeJob ? (
+                    <div className="flex items-center gap-3">
+                        <p className="text-[13px] font-medium text-foreground min-w-0 flex-1 truncate">
+                            Transcription en arrière-plan…
+                        </p>
+                        <span className="text-[11px] tabular-nums text-muted-foreground shrink-0">
+                            {Math.round(voice.transcribeJob.percent || 0)}%
+                        </span>
                     </div>
                 ) : (
                     <div className="flex items-center gap-3">

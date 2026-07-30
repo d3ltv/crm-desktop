@@ -45,6 +45,16 @@ import {
     X,
     ArrowUpDown,
     Plus,
+    Phone,
+    PhoneOff,
+    StickyNote,
+    UserRound,
+    Repeat2,
+    ArrowRightLeft,
+    Calendar,
+    Bell,
+    RotateCcw,
+    CalendarDays,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -116,8 +126,22 @@ function eventsByDay(events) {
     return map;
 }
 
+/** Icônes Lucide par type d’action du récap (pas les pastilles colorées seules). */
+const RECAP_KIND_ICONS = {
+    joint: Phone,
+    noanswer: PhoneOff,
+    note: StickyNote,
+    contact: UserRound,
+    relance_done: Repeat2,
+    moved: ArrowRightLeft,
+    rdv: Calendar,
+    rappel: Bell,
+    relance: RotateCcw,
+    event: CalendarDays,
+};
+
 function EventRow({ ev, todayKey, showWsChip, onOpen }) {
-    const meta = CALENDAR_EVENT_META[ev.type] || CALENDAR_EVENT_META.rappel;
+    const meta = CALENDAR_EVENT_META[ev.type] || CALENDAR_EVENT_META.event || CALENDAR_EVENT_META.rappel;
     const time = formatEventTime(ev.dueAt);
     const overdue = ev.dateKey < todayKey || ev.meta?.overdueCarry;
     return (
@@ -131,7 +155,7 @@ function EventRow({ ev, todayKey, showWsChip, onOpen }) {
                 overdue && "border-rose-500/35 bg-rose-500/[0.04]"
             )}
         >
-            <span className={cn("w-1 self-stretch rounded-full shrink-0", meta.dot)} />
+            <span className={cn("w-1 self-stretch rounded-full shrink-0", meta.dot || "bg-muted")} />
             <div className="min-w-0 flex-1">
                 <div className="flex items-baseline gap-1.5">
                     {time && (
@@ -680,7 +704,9 @@ export function CrmCalendar({
                                             </span>
                                             <div className="flex flex-col gap-0.5 w-full min-w-0 flex-1 overflow-hidden">
                                                 {dayEv.slice(0, maxChips).map((ev) => {
-                                                    const meta = CALENDAR_EVENT_META[ev.type] || CALENDAR_EVENT_META.rappel;
+                                                    const meta = CALENDAR_EVENT_META[ev.type]
+                                                        || CALENDAR_EVENT_META.event
+                                                        || CALENDAR_EVENT_META.rappel;
                                                     return (
                                                         <span
                                                             key={ev.id}
@@ -1105,9 +1131,13 @@ function DayRecapPanel({
                         {visible.map((a) => {
                             const time = format(new Date(a.at), "HH:mm");
                             const kindLabel = RECAP_KINDS[a.kind]?.label || a.kind;
+                            const KindIcon = RECAP_KIND_ICONS[a.kind] || StickyNote;
                             const isAgenda = RECAP_KINDS[a.kind]?.group === "agenda";
                             const overdue = !!a.meta?.overdue;
                             const canOpen = !!(a.leadId && a.workspaceId);
+                            const calMeta = a.meta?.calendarType
+                                ? (CALENDAR_EVENT_META[a.meta.calendarType] || null)
+                                : null;
                             return (
                                 <li key={a.id}>
                                     <button
@@ -1118,7 +1148,7 @@ function DayRecapPanel({
                                             if (canOpen) onOpenLead(a.workspaceId, a.leadId);
                                         }}
                                         className={cn(
-                                            "w-full text-left px-5 py-4 transition-colors flex gap-4 group",
+                                            "w-full text-left px-5 py-4 transition-colors flex gap-3 group",
                                             canOpen ? "hover:bg-muted/40" : "cursor-default opacity-90"
                                         )}
                                     >
@@ -1131,6 +1161,19 @@ function DayRecapPanel({
                                         >
                                             {time}
                                         </time>
+                                        <span
+                                            className={cn(
+                                                "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5",
+                                                overdue
+                                                    ? "bg-rose-500/10 text-rose-600"
+                                                    : isAgenda
+                                                      ? "bg-primary/10 text-primary"
+                                                      : "bg-muted text-muted-foreground"
+                                            )}
+                                            aria-hidden
+                                        >
+                                            <KindIcon size={15} strokeWidth={2} />
+                                        </span>
                                         <div className="min-w-0 flex-1">
                                             <div className="flex items-baseline gap-2 flex-wrap">
                                                 <span className="text-[15px] font-semibold tracking-tight text-foreground truncate">
@@ -1145,7 +1188,7 @@ function DayRecapPanel({
                                                           : "text-muted-foreground"
                                                 )}
                                                 >
-                                                    {kindLabel}
+                                                    {calMeta?.label || kindLabel}
                                                     {overdue ? " · retard" : ""}
                                                 </span>
                                             </div>

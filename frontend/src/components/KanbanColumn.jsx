@@ -324,7 +324,7 @@ export const KanbanColumn = ({
                       : ""
             } ${leadDragging ? "is-lead-dragging" : ""}`}
             style={{
-                width: `${workspace.columnWidth ?? 300}px`,
+                width: `${workspace.columnWidth ?? 340}px`,
             }}
             onDragOver={(e) => {
                 // Reorder de colonnes (HTML5) uniquement

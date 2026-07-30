@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-    loadProfiles, renameProfile, deleteProfile, duplicateProfile,
+    loadProfiles, listProfilesForUi, renameProfile, deleteProfile, duplicateProfile,
     formatProfileDate, mappingLabel, scoreProfile,
 } from "@/lib/importProfiles";
 import { toast } from "sonner";
@@ -52,8 +52,10 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, onDuplicate, onUpda
     const [editing,      setEditing]      = useState(false);
     const [nameDraft,    setNameDraft]    = useState(profile.name);
     const [confirmDel,   setConfirmDel]   = useState(false);
+    const isBuiltin = Boolean(profile.builtin);
 
     const commitRename = () => {
+        if (isBuiltin) return;
         const trimmed = nameDraft.trim();
         if (trimmed && trimmed !== profile.name) onRename(profile.id, trimmed);
         setEditing(false);
@@ -100,6 +102,11 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, onDuplicate, onUpda
                     ) : (
                         <div className="flex items-center gap-1.5">
                             <span className="font-semibold text-sm text-foreground truncate">{profile.name}</span>
+                            {isBuiltin && (
+                                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-primary/10 text-primary shrink-0">
+                                    Préréglage
+                                </span>
+                            )}
                             {scorePct != null && (
                                 <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted ${scoreColor}`}>
                                     {scorePct}%
@@ -113,14 +120,18 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, onDuplicate, onUpda
                             <Layers size={10} />
                             {Object.keys(profile.colMapping || {}).length} colonne{Object.keys(profile.colMapping || {}).length > 1 ? "s" : ""}
                         </span>
-                        <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                            <Hash size={10} />
-                            {profile.useCount || 0} import{(profile.useCount || 0) > 1 ? "s" : ""}
-                        </span>
-                        <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                            <Clock size={10} />
-                            {formatProfileDate(profile.lastUsedAt)}
-                        </span>
+                        {!isBuiltin && (
+                            <>
+                                <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                    <Hash size={10} />
+                                    {profile.useCount || 0} import{(profile.useCount || 0) > 1 ? "s" : ""}
+                                </span>
+                                <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                    <Clock size={10} />
+                                    {formatProfileDate(profile.lastUsedAt)}
+                                </span>
+                            </>
+                        )}
                     </div>
                 </div>
 
@@ -135,28 +146,32 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, onDuplicate, onUpda
                         className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
                         <Copy size={12} />
                     </button>
-                    <button onClick={() => setEditing(true)}
-                        title="Renommer"
-                        className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
-                        <Pencil size={12} />
-                    </button>
-                    {confirmDel ? (
+                    {!isBuiltin && (
                         <>
-                            <button onClick={() => onDelete(profile.id)}
-                                className="h-7 px-2 rounded-lg text-[11px] font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors">
-                                Suppr.
+                            <button onClick={() => setEditing(true)}
+                                title="Renommer"
+                                className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
+                                <Pencil size={12} />
                             </button>
-                            <button onClick={() => setConfirmDel(false)}
-                                className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary">
-                                <X size={12} />
-                            </button>
+                            {confirmDel ? (
+                                <>
+                                    <button onClick={() => onDelete(profile.id)}
+                                        className="h-7 px-2 rounded-lg text-[11px] font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors">
+                                        Suppr.
+                                    </button>
+                                    <button onClick={() => setConfirmDel(false)}
+                                        className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary">
+                                        <X size={12} />
+                                    </button>
+                                </>
+                            ) : (
+                                <button onClick={() => setConfirmDel(true)}
+                                    title="Supprimer"
+                                    className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
+                                    <Trash2 size={12} />
+                                </button>
+                            )}
                         </>
-                    ) : (
-                        <button onClick={() => setConfirmDel(true)}
-                            title="Supprimer"
-                            className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
-                            <Trash2 size={12} />
-                        </button>
                     )}
                 </div>
             </div>
@@ -178,7 +193,7 @@ const ProfileCard = ({ profile, onApply, onDelete, onRename, onDuplicate, onUpda
                         {scorePct >= 90 ? "✓ Appliquer ce profil" : "Appliquer ce profil"}
                     </Button>
                 )}
-                {canUpdate && onUpdateFromCurrent && (
+                {canUpdate && onUpdateFromCurrent && !isBuiltin && (
                     <Button variant="outline" size="sm" onClick={() => onUpdateFromCurrent(profile.id)}
                         className="w-full h-8 rounded-lg text-[12px] border-emerald-500/40 text-emerald-700 dark:text-emerald-400">
                         Enregistrer le mapping actuel dessus
@@ -207,11 +222,11 @@ export const ImportProfilesManager = ({
     appliedProfileId = null,
     canSave = false,
 }) => {
-    const [profiles,    setProfiles]    = useState(() => loadProfiles());
+    const [profiles,    setProfiles]    = useState(() => listProfilesForUi());
     const [saveMode,    setSaveMode]    = useState(false);
     const [saveName,    setSaveName]    = useState("");
 
-    const refresh = () => setProfiles(loadProfiles());
+    const refresh = () => setProfiles(listProfilesForUi());
 
     const handleDelete = useCallback((id) => {
         deleteProfile(id);

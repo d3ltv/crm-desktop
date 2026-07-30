@@ -1,0 +1,30 @@
+{
+  "productName": "Relia Console",
+  "identifier": "local.relia.console",
+  "version": "0.1.0",
+  "build": {
+    "beforeDevCommand": "HOST=127.0.0.1 BROWSER=none REACT_APP_RELIA_VARIANT=console yarn start",
+    "beforeBuildCommand": "REACT_APP_RELIA_VARIANT=console DISABLE_ESLINT_PLUGIN=true CI=false yarn build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Relia Console",
+        "width": 720,
+        "height": 820,
+        "minWidth": 560,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

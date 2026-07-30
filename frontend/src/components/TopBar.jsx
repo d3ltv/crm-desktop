@@ -33,10 +33,17 @@ import {
     CalendarDays,
     Keyboard,
     ChevronLeft,
+    FileText,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { leadsToCsv } from "@/lib/csvUtils";
+import {
+    collectCallTranscripts,
+    exportCallTranscriptsMarkdown,
+    DEFAULT_TRANSCRIPT_EXPORT_LIMIT,
+} from "@/lib/callTranscriptExport";
+import { toast } from "sonner";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -172,6 +179,26 @@ export const TopBar = ({
         () => state.order.map((id) => state.workspaces[id]).filter(Boolean),
         [state.order, state.workspaces]
     );
+
+    const transcriptCount = useMemo(
+        () => collectCallTranscripts(allWorkspaces, { limit: DEFAULT_TRANSCRIPT_EXPORT_LIMIT }).length,
+        [allWorkspaces]
+    );
+
+    const handleExportColdCallsMd = () => {
+        const result = exportCallTranscriptsMarkdown(allWorkspaces, {
+            limit: DEFAULT_TRANSCRIPT_EXPORT_LIMIT,
+        });
+        if (!result.ok) {
+            toast.message("Aucune transcription", {
+                description: "Enregistre un appel avec transcription automatique, puis réessaie.",
+            });
+            return;
+        }
+        toast.success("Fichier téléchargé", {
+            description: `${result.count} appel${result.count > 1 ? "s" : ""} · prêt pour Claude`,
+        });
+    };
 
     const goalOpts = useMemo(
         () => ({ dailyGoal: state.settings?.dailyGoal || 20 }),
@@ -695,6 +722,28 @@ export const TopBar = ({
                                 data-testid="settings-daily-goal-btn"
                             >
                                 <Target size={14} className="mr-2" /> Objectif quotidien
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Analyse
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                onClick={handleExportColdCallsMd}
+                                data-testid="settings-export-cold-calls-md"
+                                disabled={transcriptCount === 0}
+                                className="items-start py-2"
+                            >
+                                <FileText size={14} className="mr-2 mt-0.5 shrink-0" />
+                                <span className="flex-1 min-w-0">
+                                    <span className="block text-[13px] leading-snug">
+                                        Exporter mes cold calls (.md)
+                                    </span>
+                                    <span className="block text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                                        {transcriptCount > 0
+                                            ? `${transcriptCount} transcription${transcriptCount > 1 ? "s" : ""} + prompt Claude`
+                                            : "Aucune transcription pour l’instant"}
+                                    </span>
+                                </span>
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">

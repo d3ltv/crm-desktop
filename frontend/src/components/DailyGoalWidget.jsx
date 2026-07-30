@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { Target } from "lucide-react";
 import { useCrm } from "@/context/CrmContext";
 import { flushDesktopStorageNow } from "@/lib/desktopLocalStorage";
 import { countContactsToday } from "@/lib/reliaBrain";

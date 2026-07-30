@@ -234,8 +234,41 @@ Cartes au repos : **plates** (bordure fine, pas d’ombre lourde). Glass / blur 
 | Transcription | `transcribeLocal.js` | Whisper **local** `@xenova/transformers` · `whisper-base` (~75 Mo) · offline après 1er DL |
 | Notifs OS | `desktopNotifications.js` | Follow-ups ; cooldown ~30 min / item |
 | Auto history | Rust | Snapshots périodiques dans `backups/` |
+| **Mises à jour** | `appUpdates.js` + `align.rs` + Relia Console | Pointeur `official.json` (release GitHub `official`) ; alignement au démarrage (upgrade **ou** rollback) ; data hors bundle |
 
 Fenêtre : 1440×900, min 1024×680 (`tauri.conf.json`).
+
+### Canal officiel (Console → GitHub → Relia)
+
+**Logique :** Relia Console pose la version officielle. GitHub stocke les archives. Chaque Relia, **au démarrage**, lit le pointeur et propose d’**aligner** si `local ≠ officiel`.
+
+| Élément | Tag GitHub | Contenu |
+|---------|------------|---------|
+| Archive immuable | `vX.Y.Z` | `Relia_…app.tar.gz` + `.sig` (+ copie `official.json`) |
+| Pointeur mutable | `official` | `official.json` seul — **ne pas supprimer** |
+
+Endpoint clients :
+
+`https://github.com/d3ltv/crm-desktop/releases/download/official/official.json`
+
+**Relia Console** (`identifier: local.relia.console` — data séparées du CRM) :
+
+```bash
+cd frontend
+yarn desktop:console          # dev
+yarn desktop:build:console    # Relia Console.app
+```
+
+Dans la Console : coller un PAT GitHub (Releases) → **Publier** (build + upload + pointeur) ou **Rollback** (réécrit seulement le pointeur, pas de rebuild).
+
+CLI équivalent :
+
+```bash
+yarn desktop:publish-update "Notes FR"
+yarn desktop:set-official 0.1.0 "Retour arrière"
+```
+
+Clé de signature : `frontend/src-tauri/.updater-keys/relia.key` (gitignored, backup local). L’updater remplace **seulement** `Relia.app` — jamais `crm_state_v1.json` / recordings. **Ne jamais changer** `identifier: local.crm.desktop` sur Relia client.
 
 ---
 
@@ -294,6 +327,7 @@ Bundle frais aussi ici :
 9. **Fermer/rouvrir Relia.app sans rebuild** = anciennes sources. Toujours rebuild + réinstaller (§7) **ou** travailler en `yarn desktop`.
 10. Workspace Cursor ouvert sur `crmnew-main` alors que Relia = `crm-desktop` → mods au mauvais endroit.
 11. Tester Applications **pendant** que tu codes en dev → confusion : ferme Applications, garde `yarn desktop`.
+12. **Mises à jour** : pointeur `official.json` (release `official`) + Relia Console. Ne jamais changer `identifier` Relia. L’alignement ne touche pas `Application Support`. Rollback = re-pointeur, pas de rebuild.
 
 ---
 
@@ -305,7 +339,8 @@ Bundle frais aussi ici :
 4. Pour un changement UI/UX : viser le **minimum de friction** (esprit Apple) + DA minimaliste + tokens `index.css` / SPEC.
 5. Pour un changement data : passer par `dispatch` dans `CrmContext` + vérifier la persistence disque.
 6. Pour le natif (FS, notifs, recordings) : Tauri commands dans `src-tauri`, bridge dans `src/lib/`.
-7. **Quand tu veux shipper** vers l’app installée : `yarn desktop:build` + copie vers `/Applications/Relia.app` + Cmd+Q / relancer (§7).
+7. Pour publier / rollback une version : **Relia Console** (`yarn desktop:console`) ou `desktop:publish-update` / `desktop:set-official`.
+8. **Quand tu veux shipper** vers l’app installée : `yarn desktop:build` + copie vers `/Applications/Relia.app` + Cmd+Q / relancer (§7).
 
 En cas de doute DA : ouvrir `SPEC_VISUELLE_KANBAN.md` plutôt que d’inventer un nouveau look.
 

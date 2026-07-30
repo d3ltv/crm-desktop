@@ -8,7 +8,7 @@ import { isContactedColumn } from "@/constants/columnPatterns";
 
 function isCallNoteText(text) {
     const t = String(text || "");
-    return t.includes("📞") || t.includes("📵");
+    return t.includes("📞") || t.includes("📵") || t.includes("🔁");
 }
 
 /**

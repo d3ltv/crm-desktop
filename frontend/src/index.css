@@ -336,9 +336,7 @@ html.density-compact .lead-card h4 {
     font-size: 13px !important;
     line-height: 1.25 !important;
 }
-html.density-compact .kanban-col {
-    width: 270px !important;
-}
+/* Largeur colonnes = workspace.columnWidth (slider), pas de override densité */
 
 /* Action bar: visible au survol / focus / mode rapide / tactile */
 .lead-card .lead-card-actions {
@@ -453,13 +451,8 @@ html.density-compact .kanban-col {
     animation: softPulse 1.8s ease-in-out infinite;
 }
 
-@keyframes sparkleTwinkle {
-    0%, 100% { opacity: 0.55; transform: scale(1) rotate(0deg); }
-    40% { opacity: 1; transform: scale(1.15) rotate(-8deg); }
-    70% { opacity: 0.85; transform: scale(1.05) rotate(6deg); }
-}
+/* Icône Information pertinente — fixe, sans clignotement */
 .sparkle-icon {
-    animation: sparkleTwinkle 2.2s ease-in-out infinite;
     color: hsl(var(--primary));
 }
 

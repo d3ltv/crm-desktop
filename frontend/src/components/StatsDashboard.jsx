@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { isRelia2Export } from "@/lib/reliaVariant";
+import { getHomeEconomics, getWorkspaceEconomics, getColumnIntel } from "@/lib/reliaBrain";
 
 // ---------- Helpers ----------
 function pct(n) {
@@ -1015,6 +1016,53 @@ export const StatsDashboard = ({ alertRequest = null, onAlertRequestHandled }) =
         [scopedWorkspaces, alertType]
     );
 
+    // Économie du cerveau : exactement les chiffres servis aux fiches prospect
+    const brainEcon = useMemo(
+        () => getHomeEconomics(scopedWorkspaces),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [state.workspaces, view]
+    );
+
+    /** Ce que Relia a déduit tout seul : prix unitaires, segments, colonnes. */
+    const learnedInsights = useMemo(() => {
+        const items = [];
+        const multi = scopedWorkspaces.length > 1;
+        const round1 = (v) => Math.round(v * 10) / 10;
+        for (const ws of scopedWorkspaces) {
+            const prefix = multi ? `${ws.name} · ` : "";
+            const econ = getWorkspaceEconomics(ws);
+            for (const u of (econ?.unitRates || []).slice(0, 2)) {
+                items.push({
+                    id: `unit:${ws.id}:${u.key}`,
+                    label: `${prefix}${fmtEur(u.ratePerUnit)} par ${u.label.toLowerCase()}`,
+                    detail: `Prix unitaire déduit de ${u.samples} deals gagnés`,
+                    tone: "neutral",
+                });
+            }
+            for (const s of (econ?.segments || []).slice(0, 2)) {
+                const up = s.lift >= 1;
+                items.push({
+                    id: `seg:${ws.id}:${s.label}`,
+                    label: up
+                        ? `${prefix}« ${s.label} » convertit ${round1(s.lift)}× mieux`
+                        : `${prefix}« ${s.label} » convertit ${round1(1 / s.lift)}× moins`,
+                    detail: `${pct(s.winRate * 100)} de closes sur ${s.closedSample} prospects de ce tag`,
+                    tone: up ? "ok" : "warn",
+                });
+            }
+            for (const a of (getColumnIntel(ws)?.advice || []).slice(0, 2)) {
+                items.push({
+                    id: `col:${ws.id}:${a.id}`,
+                    label: `${prefix}${a.label}`,
+                    detail: a.detail,
+                    tone: a.tone,
+                });
+            }
+        }
+        return items.slice(0, 6);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [state.workspaces, view]);
+
     const current = view === "total"
         ? totalStats
         : statsPerWs.find((s) => s.ws.id === view)?.stats || null;
@@ -1305,6 +1353,78 @@ export const StatsDashboard = ({ alertRequest = null, onAlertRequestHandled }) =
                                 <Panel>
                                     <PanelLabel>Distribution par tranche de prix</PanelLabel>
                                     <DistributionBars distribution={current.dealDistribution} />
+                                </Panel>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Économie apprise — même moteur que « Informations pertinentes » */}
+                    {(brainEcon?.ltv != null || brainEcon?.valuePerCall != null || learnedInsights.length > 0) && (
+                        <div id="stats-economics" className="space-y-4 scroll-mt-20">
+                            <h3 className="text-[18px] font-semibold tracking-tight text-foreground">
+                                Économie apprise
+                            </h3>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                <Tile
+                                    label="Valeur client"
+                                    value={brainEcon?.ltv != null ? fmtEur(brainEcon.ltv) : "—"}
+                                    sub={brainEcon?.clients
+                                        ? `Encaissé / ${brainEcon.clients} client${brainEcon.clients > 1 ? "s" : ""}`
+                                        : "Aucun client encore"}
+                                    tone={brainEcon?.ltv != null ? "success" : "neutral"}
+                                />
+                                <Tile
+                                    label="Valeur d'un appel"
+                                    value={brainEcon?.valuePerCall != null ? fmtEur(brainEcon.valuePerCall) : "—"}
+                                    sub={brainEcon?.callCount
+                                        ? `${brainEcon.callCount} appels passés`
+                                        : "Pas encore assez d'appels"}
+                                />
+                                <Tile
+                                    label="Pipeline pondéré"
+                                    value={brainEcon?.weightedPipeline != null ? fmtEur(brainEcon.weightedPipeline) : "—"}
+                                    sub="Taux de close observé par étape"
+                                />
+                                <Tile
+                                    label="À chiffrer"
+                                    value={brainEcon?.missingValueWon || 0}
+                                    sub={(brainEcon?.missingValueWon || 0) > 0
+                                        ? "Gagnés sans montant — fausse tes moyennes"
+                                        : "Tous tes gagnés sont chiffrés"}
+                                    tone={(brainEcon?.missingValueWon || 0) > 0 ? "danger" : "success"}
+                                />
+                            </div>
+
+                            {learnedInsights.length > 0 && (
+                                <Panel>
+                                    <PanelLabel hint="mis à jour en prospectant">
+                                        Ce que Relia a déduit de tes données
+                                    </PanelLabel>
+                                    <div className="space-y-2.5">
+                                        {learnedInsights.map((item) => (
+                                            <div key={item.id} className="flex items-start gap-2.5">
+                                                <span
+                                                    className={`mt-1.5 h-1.5 w-1.5 rounded-full shrink-0 ${
+                                                        item.tone === "ok"
+                                                            ? "bg-emerald-500"
+                                                            : item.tone === "warn"
+                                                              ? "bg-amber-500"
+                                                              : "bg-muted-foreground/40"
+                                                    }`}
+                                                />
+                                                <div className="min-w-0">
+                                                    <p className="text-[13px] font-medium text-foreground leading-snug">
+                                                        {item.label}
+                                                    </p>
+                                                    {item.detail && (
+                                                        <p className="text-[12px] text-muted-foreground leading-snug mt-0.5">
+                                                            {item.detail}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </Panel>
                             )}
                         </div>

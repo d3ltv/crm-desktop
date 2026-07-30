@@ -13,7 +13,7 @@ import {
 } from "@/constants/columnPatterns";
 import { normalizeInconsistencyConfig } from "@/lib/inconsistencyRules";
 
-/** @typedef {'rdv'|'relance'|'rappel'|'surveillance'} CalendarEventType */
+/** @typedef {'rdv'|'relance'|'rappel'|'surveillance'|'event'} CalendarEventType */
 
 export const CALENDAR_EVENT_META = {
     rdv: {
@@ -36,6 +36,13 @@ export const CALENDAR_EVENT_META = {
         text: "text-violet-700 dark:text-violet-300",
         chip: "bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/25",
         dot: "bg-violet-500",
+    },
+    event: {
+        label: "Événement",
+        color: "bg-slate-500",
+        text: "text-slate-700 dark:text-slate-300",
+        chip: "bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/25",
+        dot: "bg-slate-500",
     },
     surveillance: {
         label: "À surveiller",
@@ -182,7 +189,7 @@ export function collectCalendarEvents(workspaces, { now = new Date(), standalone
         if (!ev) continue;
         const dateKey = toLocalDateKey(ev.dueAt || ev.date);
         if (!dateKey) continue;
-        const type = ev.type === "rdv" ? "rdv" : "rappel";
+        const type = ev.type === "rdv" ? "rdv" : "event";
         pushEvent(out, {
             id: `standalone:${ev.id}`,
             workspaceId: ev.workspaceId || null,

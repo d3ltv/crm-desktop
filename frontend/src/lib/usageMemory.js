@@ -38,6 +38,8 @@ const TRACKED_ACTIONS = new Set([
     "DELETE_RELANCE",
     "SET_DEAL_VALUE",
     "SET_LOST_REASON",
+    "ADD_CUSTOM_FIELD",
+    "ADD_COLUMN",
     "ADD_STANDALONE_EVENT",
     "UPDATE_STANDALONE_EVENT",
     "DELETE_STANDALONE_EVENT",
@@ -126,6 +128,7 @@ function createEmptyMemory() {
                 sessionGapsHours: [],
             },
             pendingByLead: {},
+            fieldLabels: {},
             lastActiveAt: null,
             uiGuidance: {
                 relia2FeatureTour: {
@@ -156,6 +159,8 @@ function ensureWs(mem, wsId, name) {
             hourCounts: emptyHourCounts(),
             notifOpened: {},
             notifDismissed: {},
+            fieldLabels: {},
+            columnCreatedAt: {},
             lastActiveAt: null,
         };
     } else if (name) {
@@ -431,6 +436,24 @@ export function trackCrmAction(action, stateBefore, stateAfter) {
         ws.contacts += 1;
     }
 
+    // Relance manuelle (email, tel…) = aussi un contact du jour pour l’objectif / créneaux
+    if (action.type === "LOG_RELANCE" && ws) {
+        ws.contacts += 1;
+        ws.relances += 1;
+        if (leadId) {
+            const pending = pendingByLead.get(leadId);
+            if (pending?.nrpAt) {
+                const h = hoursBetween(pending.nrpAt, iso);
+                if (h != null && h <= 24 * 21) {
+                    pushSample(mem.global.samples.nrpToFollowupHours, h);
+                }
+                delete pending.nrpAt;
+                if (!pending.reachedAt) pendingByLead.delete(leadId);
+                else pendingByLead.set(leadId, pending);
+            }
+        }
+    }
+
     if ((action.type === "ADD_NOTE" || action.type === "LOG_CONTACT") && leadId) {
         if (ws) ws.notes += 1;
         const text = String(action.text || action.note?.text || "");
@@ -473,24 +496,40 @@ export function trackCrmAction(action, stateBefore, stateAfter) {
         }
     }
 
-    if (action.type === "LOG_RELANCE") {
-        if (ws) ws.relances += 1;
-        if (leadId) {
-            const pending = pendingByLead.get(leadId);
-            if (pending?.nrpAt) {
-                const h = hoursBetween(pending.nrpAt, iso);
-                if (h != null && h <= 24 * 21) {
-                    pushSample(mem.global.samples.nrpToFollowupHours, h);
-                }
-                delete pending.nrpAt;
-                if (!pending.reachedAt) pendingByLead.delete(leadId);
-                else pendingByLead.set(leadId, pending);
+    if (action.type === "MOVE_LEAD" || action.type === "MOVE_LEAD_ORDERED") {
+        if (ws) ws.moves += 1;
+    }
+
+    // Structure fabriquée par l'utilisateur : champs et colonnes qu'il invente.
+    // Mémorisé ici car l'état seul oublie un champ supprimé ou une colonne vide.
+    if (action.type === "ADD_CUSTOM_FIELD") {
+        const label = String(action.label || "").trim();
+        if (label && !action.isMainDuplicate) {
+            const key = label.toLowerCase();
+            if (!mem.global.fieldLabels) mem.global.fieldLabels = {};
+            const g = mem.global.fieldLabels[key] || { label, n: 0 };
+            g.label = label;
+            g.n += 1;
+            g.lastAt = iso;
+            mem.global.fieldLabels[key] = g;
+            if (ws) {
+                if (!ws.fieldLabels) ws.fieldLabels = {};
+                const w = ws.fieldLabels[key] || { label, n: 0 };
+                w.label = label;
+                w.n += 1;
+                w.lastAt = iso;
+                ws.fieldLabels[key] = w;
             }
         }
     }
 
-    if (action.type === "MOVE_LEAD" || action.type === "MOVE_LEAD_ORDERED") {
-        if (ws) ws.moves += 1;
+    if (action.type === "ADD_COLUMN" && ws && stateBefore && stateAfter) {
+        const beforeIds = new Set(stateBefore.workspaces?.[wsId]?.columnOrder || []);
+        const newId = (stateAfter.workspaces?.[wsId]?.columnOrder || []).find((id) => !beforeIds.has(id));
+        if (newId) {
+            if (!ws.columnCreatedAt) ws.columnCreatedAt = {};
+            ws.columnCreatedAt[newId] = iso;
+        }
     }
 
     pushEvent(mem, {
@@ -723,6 +762,34 @@ export function getLearnedPreferredHour(workspaceId) {
     const { peakHour: peak, confidence } = getLearnedRecoOverrides(workspaceId);
     if (peak == null || confidence < 0.12) return null;
     return Math.min(BUSINESS_HOUR_MAX, Math.max(BUSINESS_HOUR_MIN, peak));
+}
+
+/**
+ * Champs que l'utilisateur a créés à la main, du plus utilisé au moins utilisé.
+ * L'état oublie un champ supprimé — la mémoire, non : l'intention reste connue.
+ * @param {string} [workspaceId] restreint au workspace, sinon global
+ * @returns {{ key: string, label: string, n: number, lastAt?: string }[]}
+ */
+export function getLearnedFieldLabels(workspaceId) {
+    const mem = memory;
+    if (!mem) return [];
+    const scoped = workspaceId ? mem.workspaces?.[workspaceId]?.fieldLabels : null;
+    const src = scoped && Object.keys(scoped).length ? scoped : mem.global?.fieldLabels;
+    if (!src) return [];
+    return Object.entries(src)
+        .map(([key, v]) => ({ key, label: v?.label || key, n: v?.n || 0, lastAt: v?.lastAt }))
+        .filter((f) => f.n > 0)
+        .sort((a, b) => b.n - a.n);
+}
+
+/**
+ * Date de création réelle des colonnes (l'état ne l'enregistre pas).
+ * @param {string} [workspaceId]
+ * @returns {Record<string, string>} columnId → ISO
+ */
+export function getLearnedColumnCreatedAt(workspaceId) {
+    if (!workspaceId) return {};
+    return memory?.workspaces?.[workspaceId]?.columnCreatedAt || {};
 }
 
 /** Flush à la fermeture / background. */

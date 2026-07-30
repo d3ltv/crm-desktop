@@ -73,6 +73,14 @@ agenthub/agents/youtube/db
 *.deb
 *.dylib
 
+# Whisper embarqué (Rellia Connect) — modèle ~1 Go, ne pas committer
+frontend/src-tauri/resources/whisper/
+!frontend/src-tauri/resources/whisper/.gitkeep
+
+# Clés signature mises à jour Relia (privée JAMAIS committer)
+frontend/src-tauri/.updater-keys/
+!frontend/src-tauri/.updater-keys/.gitkeep
+
 # Build caches
 .cache/
 

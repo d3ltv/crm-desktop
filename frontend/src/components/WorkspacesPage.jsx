@@ -5,6 +5,7 @@ import {
     Plus, LayoutGrid, Trash2, Users, Trophy,
     ChevronRight, Briefcase, Target, Activity,
     Clock3, Zap, Download, Upload, Search, RefreshCw, Globe,
+    Settings2, FileText, Keyboard, PanelRight, Monitor, Moon, Sun, UserRound,
 } from "lucide-react";
 import { CreateWorkspaceDialog } from "./CreateWorkspaceDialog";
 import { ThemeToggle } from "./ThemeToggle";
@@ -21,9 +22,27 @@ import {
 } from "@/lib/statsUtils";
 import { countUnreadWorkspaceNotifs } from "@/lib/followupNotifs";
 import { useNotifSeenMap } from "@/hooks/useNotifSeenMap";
-import { getHomeBrief } from "@/lib/reliaBrain";
+import { getHomeBrief, getHomeEconomics, fmtEur } from "@/lib/reliaBrain";
+import {
+    collectCallTranscripts,
+    exportCallTranscriptsMarkdown,
+    DEFAULT_TRANSCRIPT_EXPORT_LIMIT,
+} from "@/lib/callTranscriptExport";
 import { CrmCalendar } from "./CrmCalendar";
 import { isRelia2Export, PRODUCT_DISPLAY_NAME } from "@/lib/reliaVariant";
+import { DailyGoalEditor } from "./DailyGoalWidget";
+import { KeyboardShortcutsDialog } from "./KeyboardShortcutsDialog";
+import { OwnerIdentityDialog } from "./OwnerIdentityDialog";
+import { isOwnerIdentitySetupDone } from "@/lib/ownerIdentity";
+import { toast } from "sonner";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+    DropdownMenuSeparator,
+    DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -158,6 +177,10 @@ const GlobalKPIs = ({ workspaces, onOpenOverdue, onPipelineClick }) => {
         return { totalLeads, totalPipeline, totalOverdue, spaces: workspaces.length };
     }, [workspaces]);
 
+    // Mêmes chiffres que « Informations pertinentes » sur chaque fiche : le cerveau
+    // est la seule source, donc l'accueil ne peut pas raconter autre chose.
+    const econ = useMemo(() => getHomeEconomics(workspaces), [workspaces]);
+
     const items = [
         {
             label: "Espaces",
@@ -173,7 +196,10 @@ const GlobalKPIs = ({ workspaces, onOpenOverdue, onPipelineClick }) => {
         {
             label: "Pipeline",
             value: stats.totalPipeline > 0 ? fmt(stats.totalPipeline) : "—",
-            sub: stats.totalPipeline > 0 ? "Valeur deals actifs" : "Aucune donnée",
+            sub: econ?.weightedPipeline != null && econ.weightedPipeline > 0
+                // Pondéré par le taux de close réellement observé, stade par stade
+                ? `≈ ${fmtEur(econ.weightedPipeline)} pondéré`
+                : stats.totalPipeline > 0 ? "Valeur deals actifs" : "Aucune donnée",
             onClick: onPipelineClick,
         },
         {
@@ -185,8 +211,24 @@ const GlobalKPIs = ({ workspaces, onOpenOverdue, onPipelineClick }) => {
         },
     ];
 
+    // Économie apprise : ce que vaut un client, un appel — muet si l'échantillon
+    // est trop mince (mieux vaut rien qu'une moyenne sur un deal).
+    const econBits = [];
+    if (econ?.ltv != null && econ.clients >= 2) {
+        econBits.push(`Client moyen ${fmtEur(econ.ltv)} sur ${econ.clients} clients`);
+    }
+    if (econ?.valuePerCall != null) {
+        econBits.push(`${fmtEur(econ.valuePerCall)} par appel passé`);
+    }
+    if (econ?.callsPerWon != null && econ.callsPerWon >= 1) {
+        econBits.push(`~${Math.round(econ.callsPerWon)} appels par client`);
+    }
+
+    const showEconStrip = econBits.length > 0 || (econ?.missingValueWon || 0) > 0;
+
     return (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-10">
+        <>
+        <div className={`grid grid-cols-2 sm:grid-cols-4 gap-3 ${showEconStrip ? "mb-3" : "mb-10"}`}>
             {items.map((kpi) => {
                 const clickable = typeof kpi.onClick === "function";
                 const Comp = clickable ? "button" : "div";
@@ -232,6 +274,26 @@ const GlobalKPIs = ({ workspaces, onOpenOverdue, onPipelineClick }) => {
                 );
             })}
         </div>
+        {showEconStrip && (
+            <div
+                className="mb-10 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground"
+                data-testid="home-economics-strip"
+            >
+                {econBits.map((bit, i) => (
+                    <span key={bit} className="tabular-nums">
+                        {i > 0 && <span className="mr-2 text-muted-foreground/50">·</span>}
+                        {bit}
+                    </span>
+                ))}
+                {(econ?.missingValueWon || 0) > 0 && (
+                    <span className="text-amber-700 dark:text-amber-400">
+                        {econBits.length > 0 && <span className="mr-2 text-muted-foreground/50">·</span>}
+                        {econ.missingValueWon} gagné{econ.missingValueWon > 1 ? "s" : ""} sans montant
+                    </span>
+                )}
+            </div>
+        )}
+        </>
     );
 };
 
@@ -418,7 +480,22 @@ export const WorkspacesPage = () => {
     const [confirmDel, setConfirmDel] = useState(null);
     const [search, setSearch] = useState("");
     const [alertRequest, setAlertRequest] = useState(null);
+    const [goalEditorOpen, setGoalEditorOpen] = useState(false);
+    const [shortcutsOpen, setShortcutsOpen] = useState(false);
+    const [ownerIdentityOpen, setOwnerIdentityOpen] = useState(false);
+    const [ownerIdentityFirstVisit, setOwnerIdentityFirstVisit] = useState(false);
     const searchRef = useRef(null);
+    const isDark = state.theme === "dark";
+    const panelMode = state.leadPanelMode === "modal" ? "modal" : "side";
+
+    useEffect(() => {
+        if (isOwnerIdentitySetupDone()) return;
+        const t = window.setTimeout(() => {
+            setOwnerIdentityFirstVisit(true);
+            setOwnerIdentityOpen(true);
+        }, 600);
+        return () => window.clearTimeout(t);
+    }, []);
 
     const workspaces = state.order.map((id) => state.workspaces[id]).filter(Boolean);
     const isEmpty = workspaces.length === 0;
@@ -427,6 +504,26 @@ export const WorkspacesPage = () => {
         () => (isEmpty ? null : getHomeBrief(workspaces).slot),
         [workspaces, isEmpty]
     );
+
+    const transcriptCount = useMemo(
+        () => collectCallTranscripts(workspaces, { limit: DEFAULT_TRANSCRIPT_EXPORT_LIMIT }).length,
+        [workspaces]
+    );
+
+    const handleExportColdCallsMd = () => {
+        const result = exportCallTranscriptsMarkdown(workspaces, {
+            limit: DEFAULT_TRANSCRIPT_EXPORT_LIMIT,
+        });
+        if (!result.ok) {
+            toast.message("Aucune transcription", {
+                description: "Enregistre un appel avec transcription automatique, puis réessaie.",
+            });
+            return;
+        }
+        toast.success("Fichier téléchargé", {
+            description: `${result.count} appel${result.count > 1 ? "s" : ""} · prêt pour Claude`,
+        });
+    };
 
     const handleImportBackup = () => {
         const input = document.createElement("input");
@@ -512,39 +609,154 @@ export const WorkspacesPage = () => {
                 <div className="flex items-center gap-1.5 ml-auto shrink-0">
                     {!isEmpty && <GlobalNotifBell />}
                     <ThemeToggle />
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={handleImportBackup}
-                        className="h-8 w-8 rounded-lg text-muted-foreground"
-                        title="Importer un JSON (ajoute sans écraser)"
-                        data-testid="home-import-backup-btn"
-                    >
-                        <Upload size={14} />
-                    </Button>
-                    {!isEmpty && (
-                        <>
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
                             <Button
                                 variant="ghost"
                                 size="icon"
+                                className="h-8 w-8 rounded-lg text-muted-foreground"
+                                aria-label="Paramètres"
+                                data-testid="home-settings-btn"
+                            >
+                                <Settings2 size={14} />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-64 rounded-xl">
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Apparence
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                onClick={() => dispatch({ type: "SET_THEME", theme: isDark ? "light" : "dark" })}
+                                data-testid="home-settings-theme-btn"
+                            >
+                                {isDark ? <Sun size={14} className="mr-2" /> : <Moon size={14} className="mr-2" />}
+                                {isDark ? "Mode clair" : "Mode sombre"}
+                            </DropdownMenuItem>
+                            <div className="px-2 py-1.5">
+                                <p className="text-[11px] text-muted-foreground mb-1.5">Fiche prospect</p>
+                                <div className="flex gap-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => dispatch({ type: "SET_LEAD_PANEL_MODE", mode: "side" })}
+                                        className={`flex-1 h-8 rounded-lg flex items-center justify-center gap-1.5 text-xs border transition-colors ${
+                                            panelMode !== "modal"
+                                                ? "bg-primary/10 border-primary/30 text-primary"
+                                                : "border-border text-muted-foreground hover:bg-secondary"
+                                        }`}
+                                        data-testid="home-panel-side-btn"
+                                    >
+                                        <PanelRight size={13} /> Côté
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => dispatch({ type: "SET_LEAD_PANEL_MODE", mode: "modal" })}
+                                        className={`flex-1 h-8 rounded-lg flex items-center justify-center gap-1.5 text-xs border transition-colors ${
+                                            panelMode === "modal"
+                                                ? "bg-primary/10 border-primary/30 text-primary"
+                                                : "border-border text-muted-foreground hover:bg-secondary"
+                                        }`}
+                                        data-testid="home-panel-modal-btn"
+                                    >
+                                        <Monitor size={13} /> Centre
+                                    </button>
+                                </div>
+                            </div>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Personnalisation
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                onClick={() => {
+                                    setOwnerIdentityFirstVisit(false);
+                                    setOwnerIdentityOpen(true);
+                                }}
+                                data-testid="home-settings-owner-identity-btn"
+                                className="items-start py-2"
+                            >
+                                <UserRound size={14} className="mr-2 mt-0.5 shrink-0" />
+                                <span className="flex-1 min-w-0">
+                                    <span className="block text-[13px] leading-snug">
+                                        Données à ignorer
+                                    </span>
+                                    <span className="block text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                                        Votre nom, téléphone, e-mail
+                                    </span>
+                                </span>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Objectifs
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                onClick={() => setGoalEditorOpen(true)}
+                                data-testid="home-settings-daily-goal-btn"
+                            >
+                                <Target size={14} className="mr-2" />
+                                Objectif quotidien
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Analyse
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                onClick={handleExportColdCallsMd}
+                                data-testid="home-export-cold-calls-md"
+                                disabled={transcriptCount === 0}
+                                className="items-start py-2"
+                            >
+                                <FileText size={14} className="mr-2 mt-0.5 shrink-0" />
+                                <span className="flex-1 min-w-0">
+                                    <span className="block text-[13px] leading-snug">
+                                        Exporter mes cold calls (.md)
+                                    </span>
+                                    <span className="block text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                                        {transcriptCount > 0
+                                            ? `${transcriptCount} transcription${transcriptCount > 1 ? "s" : ""} + prompt Claude`
+                                            : "Aucune transcription pour l’instant"}
+                                    </span>
+                                </span>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Aide
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                onClick={() => setShortcutsOpen(true)}
+                                data-testid="home-settings-shortcuts-btn"
+                            >
+                                <Keyboard size={14} className="mr-2" />
+                                Raccourcis clavier
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Données
+                            </DropdownMenuLabel>
+                            <DropdownMenuItem
+                                onClick={handleImportBackup}
+                                data-testid="home-settings-import-btn"
+                            >
+                                <Upload size={14} className="mr-2" />
+                                Importer un backup JSON
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
                                 onClick={exportBackup}
-                                className="h-8 w-8 rounded-lg text-muted-foreground"
-                                title="Exporter un backup JSON"
-                                data-testid="home-export-backup-btn"
+                                disabled={isEmpty}
+                                data-testid="home-settings-export-btn"
                             >
-                                <Download size={14} />
-                            </Button>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => window.location.reload()}
-                                className="h-8 w-8 rounded-lg text-muted-foreground"
-                                title="Actualiser"
-                            >
-                                <RefreshCw size={14} />
-                            </Button>
-                        </>
-                    )}
+                                <Download size={14} className="mr-2" />
+                                Exporter un backup JSON
+                            </DropdownMenuItem>
+                            {!isEmpty && (
+                                <DropdownMenuItem
+                                    onClick={() => window.location.reload()}
+                                    data-testid="home-settings-refresh-btn"
+                                >
+                                    <RefreshCw size={14} className="mr-2" />
+                                    Actualiser
+                                </DropdownMenuItem>
+                            )}
+                        </DropdownMenuContent>
+                    </DropdownMenu>
                     <Button
                         data-testid="create-workspace-header-btn"
                         onClick={() => setOpen(true)}
@@ -567,6 +779,16 @@ export const WorkspacesPage = () => {
                 onImport={handleImportBackup}
             />
                 <CreateWorkspaceDialog open={open} onOpenChange={setOpen} />
+                <DailyGoalEditor open={goalEditorOpen} onClose={() => setGoalEditorOpen(false)} />
+                <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+                <OwnerIdentityDialog
+                    open={ownerIdentityOpen}
+                    firstVisit={ownerIdentityFirstVisit}
+                    onClose={() => {
+                        setOwnerIdentityOpen(false);
+                        setOwnerIdentityFirstVisit(false);
+                    }}
+                />
             </div>
         );
     }
@@ -687,6 +909,16 @@ export const WorkspacesPage = () => {
             </div>
 
             <CreateWorkspaceDialog open={open} onOpenChange={setOpen} />
+            <DailyGoalEditor open={goalEditorOpen} onClose={() => setGoalEditorOpen(false)} />
+            <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+            <OwnerIdentityDialog
+                open={ownerIdentityOpen}
+                firstVisit={ownerIdentityFirstVisit}
+                onClose={() => {
+                    setOwnerIdentityOpen(false);
+                    setOwnerIdentityFirstVisit(false);
+                }}
+            />
 
             <AlertDialog open={!!confirmDel} onOpenChange={(v) => !v && setConfirmDel(null)}>
                 <AlertDialogContent data-testid="delete-workspace-dialog" className="rounded-2xl">

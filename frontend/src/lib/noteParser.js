@@ -1,4 +1,5 @@
-import { stripOwnerIdentity, isOwnerPerson, isOwnerPhone, isOwnerEmail } from "@/lib/ownerIdentity";
+import { stripOwnerIdentity, isOwnerPerson } from "@/lib/ownerIdentity";
+import { stripSpeakerLabels } from "@/lib/speakerDiarize";
 
 /**
  * noteParser.js — Détection automatique d'informations dans le texte d'une note
@@ -149,6 +150,7 @@ function formatPersonName(titleKey, rawName) {
  * @returns {string[]} noms formatés, dédupliqués
  */
 export function detectPersonNames(text) {
+    text = stripSpeakerLabels(text);
     if (!text || !text.trim()) return [];
     const found = [];
     const push = (formatted) => {
@@ -195,6 +197,7 @@ function personKey(s) {
  * @returns {{ phones: string[], emails: string[], addresses: string[], persons: string[] }}
  */
 export function parseNote(text) {
+    text = stripSpeakerLabels(text);
     if (!text || !text.trim()) return { phones: [], emails: [], addresses: [], persons: [] };
 
     const phones = collectPhones(text);
@@ -401,6 +404,7 @@ function nextWeekday(from, targetDay, next = false) {
  * @returns {{ iso: string, label: string, hasTime: boolean } | null}
  */
 export function detectAppointment(text, now = new Date()) {
+    text = stripSpeakerLabels(text);
     if (!text || !text.trim()) return null;
 
     const t = text.toLowerCase()

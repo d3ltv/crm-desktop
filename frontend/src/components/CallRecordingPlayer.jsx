@@ -8,9 +8,10 @@ import {
     daysUntilPurge,
 } from "@/lib/callRecordings";
 import { CallAudioPlayer } from "@/components/CallAudioPlayer";
-import { transcribeAudioBlob, isTranscribeSupported } from "@/lib/transcribeLocal";
-import { applySafeTranscriptFields, offerDetectedAppointment } from "@/lib/transcriptSideEffects";
+import { isTranscribeSupported } from "@/lib/transcribeLocal";
+import { SPEAKER_LINE_RE } from "@/lib/speakerDiarize";
 import { useCrm } from "@/context/CrmContext";
+import { useVoiceSession } from "@/context/VoiceSessionContext";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -48,20 +49,20 @@ export function CallRecordingPlayer({
     noteText = "",
     transcript: transcriptProp = "",
 }) {
-    const { state, dispatch } = useCrm();
+    const { dispatch } = useCrm();
+    const voice = useVoiceSession();
     const [rec, setRec] = useState(null);
     const [url, setUrl] = useState(null);
     const [loading, setLoading] = useState(true);
     const [missing, setMissing] = useState(false);
     const [gone, setGone] = useState(false);
     const [confirmOpen, setConfirmOpen] = useState(false);
-    const [transcribing, setTranscribing] = useState(false);
-    const [progressMsg, setProgressMsg] = useState("");
     const [transcriptExpanded, setTranscriptExpanded] = useState(false);
     const [copied, setCopied] = useState(false);
     const [localTranscript, setLocalTranscript] = useState(() =>
         extractVoiceTranscript(noteText, transcriptProp)
     );
+    const jobBusy = !!voice.transcribeJob;
 
     useEffect(() => {
         setLocalTranscript(extractVoiceTranscript(noteText, transcriptProp));
@@ -144,73 +145,18 @@ export function CallRecordingPlayer({
     };
 
     const handleTranscribe = async () => {
-        if (!rec?.blob || transcribing || !workspaceId || !leadId) return;
+        if (!rec?.blob || jobBusy || !workspaceId || !leadId || !noteId) return;
         if (!isTranscribeSupported()) {
             toast.error("Transcription non supportée ici");
             return;
         }
-        setTranscribing(true);
-        setProgressMsg("Préparation…");
-        try {
-            const transcript = await transcribeAudioBlob(rec.blob, {
-                onProgress: (p) => {
-                    if (p?.message) setProgressMsg(p.message);
-                },
-            });
-            if (!transcript) {
-                toast.message("Aucun texte détecté");
-                setTranscribing(false);
-                setProgressMsg("");
-                return;
-            }
-
-            setLocalTranscript(transcript);
-
-            if (noteId) {
-                dispatch({
-                    type: "UPDATE_NOTE",
-                    workspaceId,
-                    leadId,
-                    noteId,
-                    patch: {
-                        text: "📞 Joint · Note d'appel",
-                        transcript,
-                    },
-                });
-            }
-
-            const ws = state.workspaces?.[workspaceId];
-            const lead = ws?.leads?.[leadId];
-            if (lead) {
-                const side = applySafeTranscriptFields(dispatch, {
-                    workspaceId,
-                    leadId,
-                    lead,
-                    text: transcript,
-                    isJobs: ws?.template === "jobs",
-                });
-                if (side?.appointment) {
-                    toast.success("Appel transcrit");
-                    offerDetectedAppointment(dispatch, {
-                        workspaceId,
-                        leadId,
-                        appointment: side.appointment,
-                    });
-                } else {
-                    toast.success("Appel transcrit");
-                }
-            } else {
-                toast.success("Appel transcrit");
-            }
-        } catch (err) {
-            console.warn(err);
-            toast.error("Transcription impossible", {
-                description: String(err?.message || err).slice(0, 120),
-            });
-        } finally {
-            setTranscribing(false);
-            setProgressMsg("");
-        }
+        await voice.runBackgroundTranscribe({
+            blob: rec.blob,
+            workspaceId,
+            leadId,
+            noteId,
+            leadLabel: leadLabel || "Prospect",
+        });
     };
 
     const handleCopyTranscript = async () => {
@@ -303,19 +249,55 @@ export function CallRecordingPlayer({
                 />
                 {transcript && (() => {
                     const lines = transcript.split(/\n/).filter((l, i, arr) => l.trim() || i < arr.length - 1);
+                    const hasSpeakers = SPEAKER_LINE_RE.test(transcript);
+                    SPEAKER_LINE_RE.lastIndex = 0;
                     const collapsed = !transcriptExpanded && (lines.length > 3 || transcript.length > 180);
-                    const preview = collapsed
+                    const previewText = collapsed
                         ? (lines.slice(0, 3).join("\n").slice(0, 180) + (transcript.length > 180 || lines.length > 3 ? "…" : ""))
-                        : transcript;
-                    return (
-                        <div className="space-y-0.5 px-0.5 pt-0.5">
-                            <div className="flex items-start gap-1.5">
+                        : null;
+                    const renderBody = (raw) => {
+                        if (!hasSpeakers || collapsed) {
+                            return (
                                 <p
                                     className="flex-1 min-w-0 text-[12px] text-foreground/90 leading-relaxed whitespace-pre-wrap"
                                     data-testid={`voice-transcript-${recordingId}`}
                                 >
-                                    {preview}
+                                    {raw}
                                 </p>
+                            );
+                        }
+                        return (
+                            <div
+                                className="flex-1 min-w-0 space-y-2"
+                                data-testid={`voice-transcript-${recordingId}`}
+                            >
+                                {raw.split(/\n\n+/).map((block, i) => {
+                                    const m = block.match(SPEAKER_LINE_RE);
+                                    if (!m) {
+                                        return (
+                                            <p key={i} className="text-[12px] text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                                                {block}
+                                            </p>
+                                        );
+                                    }
+                                    const n = m[1];
+                                    const body = block.replace(SPEAKER_LINE_RE, "").trim();
+                                    return (
+                                        <p key={i} className="text-[12px] leading-relaxed">
+                                            <span className="font-medium text-muted-foreground tabular-nums">
+                                                Speaker {n}
+                                            </span>
+                                            <span className="text-foreground/90"> — {body}</span>
+                                        </p>
+                                    );
+                                })}
+                            </div>
+                        );
+                    };
+                    return (
+                        <div className="space-y-0.5 px-0.5 pt-0.5">
+                            <div className="flex items-start gap-1.5">
+                                {renderBody(previewText ?? transcript)}
                                 <button
                                     type="button"
                                     onClick={handleCopyTranscript}
@@ -371,14 +353,14 @@ export function CallRecordingPlayer({
                         <button
                             type="button"
                             onClick={handleTranscribe}
-                            disabled={transcribing}
+                            disabled={jobBusy}
                             className="text-[10px] font-medium text-muted-foreground hover:text-primary inline-flex items-center gap-1 disabled:opacity-60 transition-colors"
                             data-testid={`voice-transcribe-${recordingId}`}
                         >
-                            {transcribing ? (
+                            {jobBusy ? (
                                 <>
                                     <Loader2 size={10} className="animate-spin" />
-                                    {progressMsg || "Transcription…"}
+                                    Transcription…
                                 </>
                             ) : (
                                 <>

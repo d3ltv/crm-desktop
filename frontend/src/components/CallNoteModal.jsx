@@ -519,12 +519,16 @@ export const CallNoteModal = ({
                             </div>
                         ) : voiceHere && voice.status === "ready" ? (
                             <p className="text-[12px] text-muted-foreground">
-                                {voice.busyLabel || "Transcription / enregistrement…"}
+                                {voice.saving ? (voice.busyLabel || "Enregistrement…") : "Finalisation…"}
+                            </p>
+                        ) : voice.transcribeJob ? (
+                            <p className="text-[12px] text-muted-foreground">
+                                Transcription en arrière-plan · {Math.round(voice.transcribeJob.percent || 0)}%
                             </p>
                         ) : (
                             <div className="flex items-center justify-between gap-2">
                                 <p className="text-[12px] text-muted-foreground">
-                                    Note vocale (persiste si tu fermes)
+                                    Note vocale
                                 </p>
                                 <button
                                     type="button"

@@ -249,6 +249,82 @@ function followupToNextAction(fu) {
     };
 }
 
+/**
+ * Place un lead dans « Contacté » (ou remonte en tête s’il y est déjà).
+ * Ne sort pas de Gagné / Perdu. Utilisé par LOG_CONTACT et LOG_RELANCE.
+ * @returns {{ lead: object, leadOrder: object }}
+ */
+function placeLeadInContacted(ws, lead, leadId, now, baseLead) {
+    const contactedColumnId = resolvePipelineColumnId(ws, "contacted");
+    const contactedColumn = contactedColumnId ? ws.columns[contactedColumnId] : null;
+    const wonId = resolvePipelineColumnId(ws, "won");
+    const lostId = resolvePipelineColumnId(ws, "lost");
+    const isTerminal =
+        (wonId && lead.columnId === wonId) || (lostId && lead.columnId === lostId);
+
+    let updatedLead = { ...baseLead };
+    let newLeadOrder = { ...(ws.leadOrder || {}) };
+
+    if (!contactedColumn || isTerminal) {
+        return { lead: updatedLead, leadOrder: newLeadOrder };
+    }
+
+    if (lead.columnId !== contactedColumn.id) {
+        const targetCol = ws.columns[contactedColumn.id];
+        const autoFollowup = targetCol?.autoFollowup
+            ? makeFollowup(contactedColumn.id, 1, now)
+            : null;
+        updatedLead = {
+            ...updatedLead,
+            columnId: contactedColumn.id,
+            statusHistory: [
+                ...(lead.statusHistory || []),
+                { columnId: contactedColumn.id, at: now },
+            ],
+            autoFollowup,
+            nextAction: (autoFollowup && !isManualRdv(lead.nextAction))
+                ? followupToNextAction(autoFollowup)
+                : updatedLead.nextAction,
+            contactedColumnEnteredAt: now,
+            staleInContacted: false,
+        };
+        const srcOrder = (ws.leadOrder?.[lead.columnId] || [])
+            .filter((id) => id !== leadId);
+        const destOrder = [
+            leadId,
+            ...(ws.leadOrder?.[contactedColumn.id] || [])
+                .filter((id) => id !== leadId),
+        ];
+        newLeadOrder = {
+            ...newLeadOrder,
+            [lead.columnId]: srcOrder,
+            [contactedColumn.id]: destOrder,
+        };
+    } else {
+        const destOrder = [
+            leadId,
+            ...(ws.leadOrder?.[contactedColumn.id] || [])
+                .filter((id) => id !== leadId),
+        ];
+        const inCol = Object.values(ws.leads)
+            .filter((l) => l.columnId === contactedColumn.id && l.id !== leadId)
+            .map((l) => l.id);
+        inCol.forEach((id) => {
+            if (!destOrder.includes(id)) destOrder.push(id);
+        });
+        newLeadOrder = {
+            ...newLeadOrder,
+            [contactedColumn.id]: destOrder,
+        };
+        updatedLead = {
+            ...updatedLead,
+            staleInContacted: false,
+        };
+    }
+
+    return { lead: updatedLead, leadOrder: newLeadOrder };
+}
+
 /** Ajuste nextAction / autoFollowup quand le lead change de colonne (cycle prospection). */
 function resolveScheduleOnColumnMove(lead, targetColName, autoFollowup) {
     const name = targetColName || "";
@@ -1393,7 +1469,7 @@ function reducer(state, action) {
             const lead = ws.leads[action.leadId];
             if (!lead) return state;
             const note = {
-                id: uid(),
+                id: action.id || uid(),
                 text: action.text,
                 at: new Date().toISOString(),
                 ...(action.recordingId ? { recordingId: action.recordingId } : {}),
@@ -1477,86 +1553,21 @@ function reducer(state, action) {
                   ]
                 : lead.notes || [];
 
-            // Auto-move vers la colonne "Contacté" (rôle pipeline ou détection nom)
-            const contactedColumnId = resolvePipelineColumnId(ws, "contacted");
-            const contactedColumn = contactedColumnId ? ws.columns[contactedColumnId] : null;
-            const shouldMove =
-                contactedColumn && lead.columnId !== contactedColumn.id;
-
-            let updatedLead = {
+            const placed = placeLeadInContacted(ws, lead, action.leadId, now, {
                 ...lead,
                 lastContact: now,
                 notes: note,
                 // Contact done → clear auto-followup + its auto nextAction
                 autoFollowup: null,
                 nextAction: lead.nextAction?.auto ? null : lead.nextAction,
-            };
-
-            let newLeadOrder = ws.leadOrder || {};
-
-            if (shouldMove) {
-                const targetCol = ws.columns[contactedColumn.id];
-                const autoFollowup = targetCol?.autoFollowup
-                    ? makeFollowup(contactedColumn.id, 1, now)
-                    : null;
-                updatedLead = {
-                    ...updatedLead,
-                    columnId: contactedColumn.id,
-                    statusHistory: [
-                        ...(lead.statusHistory || []),
-                        { columnId: contactedColumn.id, at: now },
-                    ],
-                    autoFollowup,
-                    nextAction: (autoFollowup && !isManualRdv(lead.nextAction))
-                        ? followupToNextAction(autoFollowup)
-                        : updatedLead.nextAction,
-                    // Enregistrer l'entrée dans la colonne "Contacté"
-                    contactedColumnEnteredAt: now,
-                    staleInContacted: false,
-                };
-                // Update leadOrder: remove from source, prepend to destination
-                const srcOrder = (ws.leadOrder?.[lead.columnId] || [])
-                    .filter((id) => id !== action.leadId);
-                const destOrder = [
-                    action.leadId,
-                    ...(ws.leadOrder?.[contactedColumn.id] || [])
-                        .filter((id) => id !== action.leadId),
-                ];
-                newLeadOrder = {
-                    ...newLeadOrder,
-                    [lead.columnId]: srcOrder,
-                    [contactedColumn.id]: destOrder,
-                };
-            } else if (contactedColumn && lead.columnId === contactedColumn.id) {
-                // Déjà dans Contacté : remonter en tête (dernier contacté = premier)
-                const destOrder = [
-                    action.leadId,
-                    ...(ws.leadOrder?.[contactedColumn.id] || [])
-                        .filter((id) => id !== action.leadId),
-                ];
-                // Si leadOrder incomplet, reconstruire depuis les leads de la colonne
-                const inCol = Object.values(ws.leads)
-                    .filter((l) => l.columnId === contactedColumn.id && l.id !== action.leadId)
-                    .map((l) => l.id);
-                inCol.forEach((id) => {
-                    if (!destOrder.includes(id)) destOrder.push(id);
-                });
-                newLeadOrder = {
-                    ...newLeadOrder,
-                    [contactedColumn.id]: destOrder,
-                };
-                updatedLead = {
-                    ...updatedLead,
-                    staleInContacted: false,
-                };
-            }
+            });
 
             return updateWs(state, ws.id, {
                 leads: {
                     ...ws.leads,
-                    [action.leadId]: updatedLead,
+                    [action.leadId]: placed.lead,
                 },
-                leadOrder: newLeadOrder,
+                leadOrder: placed.leadOrder,
             });
         }
         case "SET_NEXT_ACTION": {
@@ -1594,16 +1605,21 @@ function reducer(state, action) {
             };
             const noteText = `🔁 Relance #${num} · ${action.canal || "Téléphone"}${action.note ? ` · ${action.note}` : ""}`;
             const noteEntry = { id: uid(), text: noteText, at: now };
+            // Relance faite = contact réel → Contacté + lastContact (algos / objectif / notifs)
+            const placed = placeLeadInContacted(ws, lead, action.leadId, now, {
+                ...lead,
+                relances: [...existing, entry],
+                notes: [noteEntry, ...(lead.notes || [])],
+                lastContact: now,
+                autoFollowup: null,
+                nextAction: lead.nextAction?.auto ? null : lead.nextAction,
+            });
             return updateWs(state, ws.id, {
                 leads: {
                     ...ws.leads,
-                    [action.leadId]: {
-                        ...lead,
-                        relances: [...existing, entry],
-                        notes: [noteEntry, ...(lead.notes || [])],
-                        lastContact: now,
-                    },
+                    [action.leadId]: placed.lead,
                 },
+                leadOrder: placed.leadOrder,
             });
         }
         // ── DELETE_RELANCE : supprime une entrée de relance ───────────────────

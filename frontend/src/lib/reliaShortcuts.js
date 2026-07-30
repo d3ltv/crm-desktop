@@ -11,6 +11,8 @@ export const RELIA_EVENTS = {
     FOCUS_NEW_NOTE: "relia:focus-new-note",
     OPEN_RELANCE: "relia:open-relance",
     SCROLL_COLUMN: "relia:scroll-column",
+    /** Empêche CallNoteModal (Joint/NRP) après un log déjà fait (relance email, contact…). */
+    SUPPRESS_CALL_NOTE: "relia:suppress-call-note",
 };
 
 /** Si le board n’est pas encore monté, le prochain listener consomme ce flag. */
@@ -52,6 +54,12 @@ export function dispatchRelia(name, detail) {
     } catch {
         /* ignore */
     }
+}
+
+/** À appeler juste avant LOG_RELANCE / LOG_CONTACT pour ne pas ouvrir Joint/NRP. */
+export function suppressCallNoteModal(leadId) {
+    if (!leadId) return;
+    dispatchRelia(RELIA_EVENTS.SUPPRESS_CALL_NOTE, { leadId });
 }
 
 /**

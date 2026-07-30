@@ -286,7 +286,7 @@ export function CalendarEventSheet({ open, event, onClose }) {
     }, [open, onClose, atMenu]);
 
     const meta = useMemo(
-        () => CALENDAR_EVENT_META[event?.type] || CALENDAR_EVENT_META.rappel,
+        () => CALENDAR_EVENT_META[event?.type] || CALENDAR_EVENT_META.event || CALENDAR_EVENT_META.rappel,
         [event?.type]
     );
 

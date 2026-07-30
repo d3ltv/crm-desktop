@@ -1,9 +1,7 @@
 /**
- * CsvImportModal.jsx — Import CSV avec deux modes : Rapide et Avancé
+ * CsvImportModal.jsx — Import CSV simplifié
  *
- * Mode Rapide  : upload → détection auto → récapitulatif → import en 2 clics
- * Mode Avancé : upload → éditeur visuel (tableau éditable, mapping colonnes,
- *               suppression lignes, recherche/filtre) → récapitulatif → import
+ * Flow : upload → aperçu (tableau + coches colonnes + options) → import
  */
 import React, { useRef, useState, useMemo, useCallback } from "react";
 import {
@@ -25,13 +23,13 @@ import {
 } from "@/components/ui/select";
 import {
     FileUp, Upload, ArrowLeft, CheckCircle2,
-    Zap, Settings2, Trash2, Search, X,
+    Trash2, Search, X,
     ChevronDown, ChevronUp, BookMarked, Sparkles, Star, Loader2,
 } from "lucide-react";
 import { parseCsv, autoDetectMapping, rowsToLeads, translateHeader, normalizeHeader, findHeaderIndex, CRM_RESERVED_HEADERS, resolveColumnIdByName } from "@/lib/csvUtils";
 import {
-    findBestProfile, applyProfile, saveProfile, touchProfile,
-    updateProfileMapping, getProfile,
+    applyProfile, saveProfile, touchProfile,
+    updateProfileMapping, getProfile, resolveImportMapping,
 } from "@/lib/importProfiles";
 import { isAgencyDetectionEnabled } from "@/lib/agencyDetection";
 import {
@@ -53,8 +51,8 @@ const EMPTY_QUALITY = {
 };
 
 // ── Constantes ────────────────────────────────────────────────────────────────
-const NONE  = "__none__";   // ignorer la colonne
-const EXTRA = "__extra__";  // garder comme champ extra
+const NONE  = "__none__";   // ignorer la colonne (défaut si non reconnue)
+const EXTRA = "__extra__";  // importer comme champ personnalisé (choix explicite)
 
 // Champs CRM principaux disponibles comme cibles de mapping
 const CRM_FIELDS = [
@@ -176,17 +174,13 @@ function buildImportPreviewLeads({
     return leads;
 }
 
-/** Stepper visuel compact */
+/** Stepper visuel compact — 2 étapes */
 const ImportStepper = ({ step, fileLoaded }) => {
     const steps = [
         { id: "upload", label: "Fichier" },
-        { id: "edit", label: "Préparer" },
-        { id: "confirm", label: "Importer" },
+        { id: "preview", label: "Aperçu" },
     ];
-    const active =
-        step === "upload" ? 0
-        : step === "advanced-edit" ? 1
-        : 2; // quick-summary | advanced-summary
+    const active = step === "upload" ? 0 : 1;
     return (
         <div className="flex items-center gap-1.5 mb-1">
             {steps.map((s, i) => {
@@ -219,10 +213,10 @@ const ImportStepper = ({ step, fileLoaded }) => {
 /** Chips de mapping — style neutre */
 const MappingChips = ({ headers, colMapping, nameHeader, max = 8 }) => {
     const chips = headers.filter(Boolean).map((h) => {
-        const target = colMapping[h] ?? EXTRA;
+        const target = colMapping[h] ?? NONE;
         if (target === NONE) return null;
         const label = target === EXTRA
-            ? (translateHeader(h) !== h ? translateHeader(h) : "Extra")
+            ? (translateHeader(h) !== h ? `${translateHeader(h)} (custom)` : "Champ custom")
             : (CRM_LABEL[target] || target);
         const isName = h === nameHeader || target === "company";
         return { h, target, label, isName };
@@ -289,7 +283,8 @@ function buildInitialMapping(headers, rows = []) {
             map[h] = "status";
             return;
         }
-        map[h] = EXTRA;
+        // Non reconnue → ignorée (pas d’import silencieux en Extra)
+        map[h] = NONE;
     });
     return map;
 }
@@ -548,13 +543,15 @@ const Summary = ({
     fileName, rowCount, summary, headers, colMapping, nameHeader,
     dupStrategy, onDupStrategyChange,
     skipExisting, onSkipExistingChange, existingLeadCount,
-    netEstimate, onEditMapping,
+    netEstimate,
     qualityScan = EMPTY_QUALITY,
     agencyDetectionOn = true,
     tagAgencies = false,
     onTagAgenciesChange,
     excludeClosedAds = false,
     onExcludeClosedAdsChange,
+    showMapping = true,
+    compact = false,
 }) => {
     const { mapped, extra, ignored, noCompany, duplicates, duplicateGroups, missingValues } = summary;
     const net = netEstimate?.net ?? rowCount;
@@ -566,14 +563,18 @@ const Summary = ({
         || qualityScan.noContactCount > 0;
 
     return (
-        <div className="space-y-5">
-            <div className="flex items-end justify-between gap-4 pb-4 border-b border-border">
+        <div className={compact ? "space-y-3" : "space-y-5"}>
+            <div className={`flex items-end justify-between gap-4 ${compact ? "pb-2" : "pb-4 border-b border-border"}`}>
                 <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground">Prêt à importer</p>
-                    <p className="text-[12px] text-muted-foreground truncate mt-0.5" title={fileName}>{fileName}</p>
+                    <p className="text-sm font-medium text-foreground">
+                        {compact ? "Options d'import" : "Prêt à importer"}
+                    </p>
+                    {!compact && (
+                        <p className="text-[12px] text-muted-foreground truncate mt-0.5" title={fileName}>{fileName}</p>
+                    )}
                 </div>
                 <div className="text-right shrink-0">
-                    <p className="text-3xl font-semibold tabular-nums tracking-tight leading-none">{net}</p>
+                    <p className={`${compact ? "text-2xl" : "text-3xl"} font-semibold tabular-nums tracking-tight leading-none`}>{net}</p>
                     <p className="text-[11px] text-muted-foreground mt-1">lead{net !== 1 ? "s" : ""}</p>
                 </div>
             </div>
@@ -587,28 +588,22 @@ const Summary = ({
                 )}
                 <span className="text-border">·</span>
                 <span>{mapped.length} mappé{mapped.length > 1 ? "s" : ""}</span>
-                {extra.length > 0 && <span>{extra.length} extra</span>}
+                {extra.length > 0 && <span>{extra.length} champ{extra.length > 1 ? "s" : ""} custom</span>}
                 {ignored.length > 0 && <span>{ignored.length} ignoré{ignored.length > 1 ? "s" : ""}</span>}
             </div>
 
             {missingValues > 0 && (
-                <p className="text-[11px] text-muted-foreground -mt-3">
+                <p className="text-[11px] text-muted-foreground -mt-1">
                     {missingValues} cellule{missingValues > 1 ? "s" : ""} vide{missingValues > 1 ? "s" : ""} dans les champs mappés
                 </p>
             )}
 
-            <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
+            {showMapping && (
+                <div className="space-y-2">
                     <span className="text-[12px] font-medium text-foreground">Colonnes</span>
-                    {onEditMapping && (
-                        <button type="button" onClick={onEditMapping}
-                            className="text-[12px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline">
-                            Modifier
-                        </button>
-                    )}
+                    <MappingChips headers={headers} colMapping={colMapping} nameHeader={nameHeader} />
                 </div>
-                <MappingChips headers={headers} colMapping={colMapping} nameHeader={nameHeader} />
-            </div>
+            )}
 
             {nameHeader && (
                 <p className="text-[12px] text-muted-foreground">
@@ -760,7 +755,9 @@ const MappingSelect = ({ header, value, usedFields, onChange, index }) => {
                 })}
                 <div className="h-px bg-border my-1" />
                 <SelectItem value={EXTRA}>
-                    {translatedLabel ? `Extra « ${translatedLabel} »` : "Garder comme extra"}
+                    {translatedLabel
+                        ? `Champ custom « ${translatedLabel} » (importé)`
+                        : "Champ custom (importé)"}
                 </SelectItem>
                 <SelectItem value={NONE}>— Ignorer —</SelectItem>
             </SelectContent>
@@ -768,22 +765,22 @@ const MappingSelect = ({ header, value, usedFields, onChange, index }) => {
     );
 };
 
-// ── Sous-composant : Éditeur avancé (layout colonnes + aperçu) ───────────────
+// ── Sous-composant : Éditeur avancé (table = source de vérité) ───────────────
 const AdvancedEditor = ({ headers, rows, colMapping, nameHeader, onHeadersChange, onRowsChange, onMappingChange, onNameHeaderChange }) => {
     const [search, setSearch] = useState("");
     const [colFilter, setColFilter] = useState("all");
     const [editingHeader, setEditingHeader] = useState(null);
     const [headerDraft, setHeaderDraft] = useState("");
-    const [selectedCol, setSelectedCol] = useState(null); // index colonne focus
+    const [selectedCol, setSelectedCol] = useState(null);
     const tableRef = useRef(null);
     const lastCrmRef = useRef({});
 
     const colEntries = useMemo(() => (
         headers.map((h, i) => ({ h, i })).filter(({ h }) => {
             if (!h) return false;
-            const target = colMapping[h] ?? EXTRA;
-            if (colFilter === "mapped")  return target !== NONE && target !== EXTRA;
-            if (colFilter === "extra")   return target === EXTRA;
+            const target = colMapping[h] ?? NONE;
+            if (colFilter === "mapped") return target !== NONE && target !== EXTRA;
+            if (colFilter === "extra") return target === EXTRA;
             if (colFilter === "ignored") return target === NONE;
             return true;
         })
@@ -803,23 +800,14 @@ const AdvancedEditor = ({ headers, rows, colMapping, nameHeader, onHeadersChange
         return s;
     }, [colMapping]);
 
-    /** Première valeur non vide d'une colonne (aperçu) */
-    const sampleOf = useCallback((colIdx) => {
-        for (const r of rows) {
-            const v = (r[colIdx] || "").trim();
-            if (v) return v;
-        }
-        return "";
-    }, [rows]);
-
     const onMappingChangeWithSwap = useCallback((header, newValue) => {
         const updated = { ...colMapping };
         if (newValue !== NONE && newValue !== EXTRA) {
             lastCrmRef.current[header] = newValue;
             Object.keys(updated).forEach((k) => {
                 if (k !== header && updated[k] === newValue) {
-                    updated[k] = EXTRA;
-                    toast.message(`« ${k} » repassé en Extra`, {
+                    updated[k] = NONE;
+                    toast.message(`« ${k} » désélectionnée`, {
                         description: `${CRM_LABEL[newValue] || newValue} est maintenant sur « ${header} ».`,
                         duration: 2500,
                     });
@@ -835,11 +823,34 @@ const AdvancedEditor = ({ headers, rows, colMapping, nameHeader, onHeadersChange
     const toggleInclude = useCallback((header, include) => {
         if (include) onMappingChangeWithSwap(header, lastCrmRef.current[header] || EXTRA);
         else {
-            const cur = colMapping[header] ?? EXTRA;
+            const cur = colMapping[header] ?? NONE;
             if (cur !== NONE && cur !== EXTRA) lastCrmRef.current[header] = cur;
             onMappingChangeWithSwap(header, NONE);
         }
     }, [colMapping, onMappingChangeWithSwap]);
+
+    const selectAllColumns = useCallback(() => {
+        const updated = { ...colMapping };
+        headers.forEach((h) => {
+            if (!h) return;
+            const cur = updated[h] ?? NONE;
+            if (cur === NONE) {
+                updated[h] = lastCrmRef.current[h] || EXTRA;
+            }
+        });
+        onMappingChange(updated);
+    }, [headers, colMapping, onMappingChange]);
+
+    const deselectAllColumns = useCallback(() => {
+        const updated = { ...colMapping };
+        headers.forEach((h) => {
+            if (!h) return;
+            const cur = updated[h] ?? NONE;
+            if (cur !== NONE && cur !== EXTRA) lastCrmRef.current[h] = cur;
+            updated[h] = NONE;
+        });
+        onMappingChange(updated);
+    }, [headers, colMapping, onMappingChange]);
 
     const deleteRow = useCallback((origIdx) => {
         onRowsChange(rows.filter((_, i) => i !== origIdx));
@@ -858,7 +869,7 @@ const AdvancedEditor = ({ headers, rows, colMapping, nameHeader, onHeadersChange
         const newName = headerDraft.trim();
         if (!newName || newName === headers[colIdx]) { setEditingHeader(null); return; }
         const oldName = headers[colIdx];
-        const newHeaders = headers.map((h, i) => i === colIdx ? newName : h);
+        const newHeaders = headers.map((h, i) => (i === colIdx ? newName : h));
         const newMapping = { ...colMapping };
         if (oldName && newMapping[oldName] !== undefined) {
             newMapping[newName] = newMapping[oldName];
@@ -876,10 +887,11 @@ const AdvancedEditor = ({ headers, rows, colMapping, nameHeader, onHeadersChange
     const mappedCount = headers.filter((h) => h && colMapping[h] !== NONE && colMapping[h] !== EXTRA).length;
     const extraCount = headers.filter((h) => h && colMapping[h] === EXTRA).length;
     const ignoredCount = headers.filter((h) => h && colMapping[h] === NONE).length;
+    const includedCount = headers.filter((h) => h && colMapping[h] !== NONE).length;
+    const totalCols = headers.filter(Boolean).length;
 
     return (
         <div className="flex flex-col gap-3 h-full min-h-0">
-            {/* Toolbar */}
             <div className="flex items-center gap-2 shrink-0 flex-wrap">
                 <div className="relative flex-1 min-w-[160px] max-w-xs">
                     <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
@@ -890,11 +902,29 @@ const AdvancedEditor = ({ headers, rows, colMapping, nameHeader, onHeadersChange
                         className="pl-7 h-8 text-[12px] rounded-lg"
                     />
                 </div>
+                <div className="flex items-center gap-1 text-[11px]">
+                    <button
+                        type="button"
+                        onClick={selectAllColumns}
+                        data-testid="csv-select-all-cols"
+                        className="h-8 px-2.5 rounded-lg border border-border bg-secondary/40 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                    >
+                        Tout cocher
+                    </button>
+                    <button
+                        type="button"
+                        onClick={deselectAllColumns}
+                        data-testid="csv-deselect-all-cols"
+                        className="h-8 px-2.5 rounded-lg border border-border bg-secondary/40 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                    >
+                        Tout décocher
+                    </button>
+                </div>
                 <div className="flex rounded-lg border border-border overflow-hidden text-[11px]">
                     {[
-                        { id: "all", label: `Tout (${headers.filter(Boolean).length})` },
+                        { id: "all", label: `Tout (${totalCols})` },
                         { id: "mapped", label: `CRM (${mappedCount})` },
-                        { id: "extra", label: `Extra (${extraCount})` },
+                        { id: "extra", label: `Custom (${extraCount})` },
                         { id: "ignored", label: `Off (${ignoredCount})` },
                     ].map((f) => (
                         <button
@@ -911,189 +941,155 @@ const AdvancedEditor = ({ headers, rows, colMapping, nameHeader, onHeadersChange
                         </button>
                     ))}
                 </div>
+                <p className="text-[11px] text-muted-foreground hidden sm:block">
+                    Cochez pour inclure · Custom = champ importé · ⭐ = nom
+                </p>
                 <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
-                    {filteredRows.length} ligne{filteredRows.length !== 1 ? "s" : ""}
+                    {includedCount}/{totalCols} colonnes · {filteredRows.length} ligne{filteredRows.length !== 1 ? "s" : ""}
                     {search ? ` / ${rows.length}` : ""}
                 </span>
             </div>
 
-            {/* Split : mapping | table */}
-            <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-3">
-                {/* Liste colonnes */}
-                <div className="rounded-xl border border-border bg-card overflow-hidden flex flex-col min-h-0 max-h-[40vh] lg:max-h-none">
-                    <div className="px-3 py-2 border-b border-border/60 shrink-0">
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                            Colonnes
-                        </p>
-                        <p className="text-[10px] text-muted-foreground/70 mt-0.5">
-                            Choisissez le champ CRM · ⭐ = nom du lead
-                        </p>
+            <div ref={tableRef} className="flex-1 rounded-xl border border-border overflow-auto min-h-0 bg-card">
+                {filteredRows.length === 0 ? (
+                    <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
+                        {search ? "Aucun résultat." : "Aucune donnée."}
                     </div>
-                    <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-                        {colEntries.map(({ h, i }) => {
-                            const target = colMapping[h] ?? EXTRA;
-                            const isIgnored = target === NONE;
-                            const isName = h === nameHeader;
-                            const sample = sampleOf(i);
-                            const selected = selectedCol === i;
-                            return (
-                                <div
-                                    key={i}
-                                    role="button"
-                                    tabIndex={0}
-                                    onClick={() => setSelectedCol(i)}
-                                    onKeyDown={(e) => { if (e.key === "Enter") setSelectedCol(i); }}
-                                    className={`rounded-lg border p-2 space-y-1.5 transition-all cursor-pointer ${
-                                        selected ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
-                                        : isName ? "border-amber-400/50 bg-amber-400/5"
-                                        : isIgnored ? "border-border/50 opacity-50"
-                                        : "border-border bg-background hover:border-border/80"
-                                    }`}
+                ) : (
+                    <table className="w-full text-[12px] border-collapse min-w-max">
+                        <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
+                            <tr>
+                                <th className="w-8 px-2 py-2 text-center text-muted-foreground/50 font-normal border-b border-border/60 text-[10px]">#</th>
+                                {colEntries.map(({ h, i }) => {
+                                    const target = colMapping[h] ?? NONE;
+                                    const isIgnored = target === NONE;
+                                    const isMapped = target !== NONE && target !== EXTRA;
+                                    const isName = h === nameHeader;
+                                    const selected = selectedCol === i;
+                                    return (
+                                        <th
+                                            key={i}
+                                            onClick={() => setSelectedCol(i)}
+                                            className={`px-2 py-2 text-left border-b font-normal align-bottom cursor-pointer transition-colors ${
+                                                selected ? "bg-primary/10 border-primary/30" : "border-border/60"
+                                            } ${isIgnored ? "opacity-45" : ""}`}
+                                            style={{ minWidth: "140px", maxWidth: "220px" }}
+                                        >
+                                            <div className="flex flex-col gap-1.5 min-w-0">
+                                                <div className="flex items-center gap-1.5 min-w-0">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={!isIgnored}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        onChange={(e) => toggleInclude(h, e.target.checked)}
+                                                        className="w-3.5 h-3.5 rounded accent-primary shrink-0"
+                                                        title={isIgnored ? "Inclure la colonne" : "Ignorer la colonne"}
+                                                    />
+                                                    {editingHeader === i ? (
+                                                        <input
+                                                            autoFocus
+                                                            value={headerDraft}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            onChange={(e) => setHeaderDraft(e.target.value)}
+                                                            onBlur={() => commitHeaderRename(i)}
+                                                            onKeyDown={(e) => {
+                                                                e.stopPropagation();
+                                                                if (e.key === "Enter") commitHeaderRename(i);
+                                                                if (e.key === "Escape") setEditingHeader(null);
+                                                            }}
+                                                            className="flex-1 min-w-0 h-6 px-1.5 text-[11px] font-semibold bg-background border border-primary rounded outline-none"
+                                                        />
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setEditingHeader(i);
+                                                                setHeaderDraft(h);
+                                                            }}
+                                                            className="flex-1 min-w-0 text-left text-[11px] font-semibold truncate hover:text-primary"
+                                                            title="Renommer la colonne"
+                                                        >
+                                                            {h}
+                                                        </button>
+                                                    )}
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            onNameHeaderChange(isName ? null : h);
+                                                        }}
+                                                        title={isName ? "Retirer comme nom" : "Nom du lead"}
+                                                        className={`shrink-0 w-5 h-5 rounded flex items-center justify-center ${
+                                                            isName ? "text-amber-400" : "text-muted-foreground/25 hover:text-amber-400"
+                                                        }`}
+                                                    >
+                                                        <Star size={11} className={isName ? "fill-amber-400" : ""} />
+                                                    </button>
+                                                </div>
+                                                <div onClick={(e) => e.stopPropagation()}>
+                                                    <MappingSelect
+                                                        header={h}
+                                                        value={target}
+                                                        usedFields={usedFields}
+                                                        index={i}
+                                                        onChange={(v) => onMappingChangeWithSwap(h, v)}
+                                                    />
+                                                </div>
+                                                <span className={`text-[10px] font-medium ${
+                                                    isName ? "text-amber-500"
+                                                    : isMapped ? "text-emerald-600 dark:text-emerald-400"
+                                                    : isIgnored ? "text-muted-foreground/40"
+                                                    : "text-amber-500"
+                                                }`}>
+                                                    {isIgnored ? "Ignorée" : isName ? "⭐ Nom du lead" : isMapped ? "Champ CRM" : "Champ custom (importé)"}
+                                                </span>
+                                            </div>
+                                        </th>
+                                    );
+                                })}
+                                <th className="w-8 px-1 py-2 border-b border-border/60" />
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredRows.map(({ r, origIdx }, rowI) => (
+                                <tr
+                                    key={origIdx}
+                                    className={`group border-t border-border/40 hover:bg-muted/30 ${rowI % 2 ? "bg-muted/10" : ""}`}
                                 >
-                                    <div className="flex items-center gap-1.5">
-                                        <input
-                                            type="checkbox"
-                                            checked={!isIgnored}
-                                            onClick={(e) => e.stopPropagation()}
-                                            onChange={(e) => toggleInclude(h, e.target.checked)}
-                                            className="w-3.5 h-3.5 rounded accent-primary shrink-0"
-                                            title={isIgnored ? "Inclure" : "Ignorer"}
-                                        />
-                                        {editingHeader === i ? (
+                                    <td className="px-2 py-1.5 text-center text-muted-foreground/40 text-[10px] tabular-nums">
+                                        {origIdx + 1}
+                                    </td>
+                                    {colEntries.map(({ h, i }) => (
+                                        <td
+                                            key={i}
+                                            className={`px-1 py-1 ${colMapping[h] === NONE ? "opacity-30" : ""} ${selectedCol === i ? "bg-primary/5" : ""}`}
+                                            style={{ maxWidth: "220px" }}
+                                        >
                                             <input
-                                                autoFocus
-                                                value={headerDraft}
-                                                onClick={(e) => e.stopPropagation()}
-                                                onChange={(e) => setHeaderDraft(e.target.value)}
-                                                onBlur={() => commitHeaderRename(i)}
-                                                onKeyDown={(e) => {
-                                                    e.stopPropagation();
-                                                    if (e.key === "Enter") commitHeaderRename(i);
-                                                    if (e.key === "Escape") setEditingHeader(null);
-                                                }}
-                                                className="flex-1 min-w-0 h-6 px-1.5 text-[11px] font-semibold bg-background border border-primary rounded outline-none"
+                                                value={r[i] ?? ""}
+                                                onChange={(e) => editCell(origIdx, i, e.target.value)}
+                                                onFocus={() => setSelectedCol(i)}
+                                                className="w-full h-7 px-2 bg-transparent rounded hover:bg-background focus:bg-background border border-transparent hover:border-border focus:border-primary outline-none text-[12px] truncate"
+                                                title={r[i] || ""}
                                             />
-                                        ) : (
-                                            <button
-                                                type="button"
-                                                onClick={(e) => { e.stopPropagation(); setEditingHeader(i); setHeaderDraft(h); }}
-                                                className="flex-1 min-w-0 text-left text-[11px] font-semibold truncate hover:text-primary"
-                                                title="Renommer"
-                                            >
-                                                {h}
-                                            </button>
-                                        )}
+                                        </td>
+                                    ))}
+                                    <td className="px-1 py-1 text-center">
                                         <button
                                             type="button"
-                                            onClick={(e) => { e.stopPropagation(); onNameHeaderChange(isName ? null : h); }}
-                                            title={isName ? "Retirer comme nom" : "Nom du lead"}
-                                            className={`shrink-0 w-5 h-5 rounded flex items-center justify-center ${
-                                                isName ? "text-amber-400" : "text-muted-foreground/25 hover:text-amber-400"
-                                            }`}
+                                            onClick={() => deleteRow(origIdx)}
+                                            title="Supprimer la ligne"
+                                            className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
                                         >
-                                            <Star size={11} className={isName ? "fill-amber-400" : ""} />
+                                            <Trash2 size={11} />
                                         </button>
-                                    </div>
-                                    {sample && !isIgnored && (
-                                        <p className="text-[10px] text-muted-foreground truncate pl-5" title={sample}>
-                                            ex. {sample}
-                                        </p>
-                                    )}
-                                    <div onClick={(e) => e.stopPropagation()}>
-                                        <MappingSelect
-                                            header={h} value={target} usedFields={usedFields} index={i}
-                                            onChange={(v) => onMappingChangeWithSwap(h, v)}
-                                        />
-                                    </div>
-                                </div>
-                            );
-                        })}
-                        {colEntries.length === 0 && (
-                            <p className="text-xs text-muted-foreground text-center py-6">Aucune colonne dans ce filtre.</p>
-                        )}
-                    </div>
-                </div>
-
-                {/* Tableau */}
-                <div ref={tableRef} className="rounded-xl border border-border overflow-auto min-h-0 bg-card">
-                    {filteredRows.length === 0 ? (
-                        <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
-                            {search ? "Aucun résultat." : "Aucune donnée."}
-                        </div>
-                    ) : (
-                        <table className="w-full text-[12px] border-collapse min-w-max">
-                            <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm">
-                                <tr>
-                                    <th className="w-8 px-2 py-2 text-center text-muted-foreground/50 font-normal border-b border-border/60 text-[10px]">#</th>
-                                    {colEntries.map(({ h, i }) => {
-                                        const target = colMapping[h] ?? EXTRA;
-                                        const isIgnored = target === NONE;
-                                        const isMapped = target !== NONE && target !== EXTRA;
-                                        const crmLabel = CRM_LABEL[target];
-                                        const isName = h === nameHeader;
-                                        const selected = selectedCol === i;
-                                        return (
-                                            <th
-                                                key={i}
-                                                onClick={() => setSelectedCol(i)}
-                                                className={`px-2 py-2 text-left border-b font-normal align-bottom cursor-pointer transition-colors ${
-                                                    selected ? "bg-primary/10 border-primary/30" : "border-border/60"
-                                                } ${isIgnored ? "opacity-40" : ""}`}
-                                                style={{ minWidth: "110px", maxWidth: "200px" }}
-                                            >
-                                                <div className="flex flex-col gap-0.5 min-w-0">
-                                                    <span className="text-[11px] font-semibold truncate" title={h}>{h}</span>
-                                                    <span className={`text-[10px] font-medium ${
-                                                        isName ? "text-amber-500"
-                                                        : isMapped ? "text-emerald-600 dark:text-emerald-400"
-                                                        : isIgnored ? "text-muted-foreground/40"
-                                                        : "text-amber-500"
-                                                    }`}>
-                                                        {isName ? `⭐ Nom${isMapped && crmLabel ? ` · ${crmLabel}` : ""}`
-                                                            : isMapped ? `→ ${crmLabel}`
-                                                            : isIgnored ? "Ignoré"
-                                                            : "Extra"}
-                                                    </span>
-                                                </div>
-                                            </th>
-                                        );
-                                    })}
-                                    <th className="w-8 px-1 py-2 border-b border-border/60" />
+                                    </td>
                                 </tr>
-                            </thead>
-                            <tbody>
-                                {filteredRows.map(({ r, origIdx }, rowI) => (
-                                    <tr key={origIdx}
-                                        className={`group border-t border-border/40 hover:bg-muted/30 ${rowI % 2 ? "bg-muted/10" : ""}`}>
-                                        <td className="px-2 py-1.5 text-center text-muted-foreground/40 text-[10px] tabular-nums">
-                                            {origIdx + 1}
-                                        </td>
-                                        {colEntries.map(({ h, i }) => (
-                                            <td key={i}
-                                                className={`px-1 py-1 ${colMapping[h] === NONE ? "opacity-30" : ""} ${selectedCol === i ? "bg-primary/5" : ""}`}
-                                                style={{ maxWidth: "200px" }}>
-                                                <input
-                                                    value={r[i] ?? ""}
-                                                    onChange={(e) => editCell(origIdx, i, e.target.value)}
-                                                    onFocus={() => setSelectedCol(i)}
-                                                    className="w-full h-7 px-2 bg-transparent rounded hover:bg-background focus:bg-background border border-transparent hover:border-border focus:border-primary outline-none text-[12px] truncate"
-                                                    title={r[i] || ""}
-                                                />
-                                            </td>
-                                        ))}
-                                        <td className="px-1 py-1 text-center">
-                                            <button type="button" onClick={() => deleteRow(origIdx)}
-                                                title="Supprimer la ligne"
-                                                className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <Trash2 size={11} />
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    )}
-                </div>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
             </div>
         </div>
     );
@@ -1153,7 +1149,7 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
     const { state, dispatch, batchDispatch } = useCrm();
     const workspace = state.workspaces[workspaceId];
 
-    // step: "upload" | "quick-summary" | "advanced-edit" | "advanced-summary"
+    // step: "upload" | "preview"
     const [step, setStep]           = useState("upload");
     const [fileName, setFileName]   = useState("");
     const [headers, setHeaders]     = useState([]);
@@ -1167,6 +1163,8 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
     const [appliedProfileId,  setAppliedProfileId]  = useState(null);
     // showProfiles : afficher le panneau de gestion des profils
     const [showProfiles,      setShowProfiles]      = useState(false);
+    // Options d'import repliables dans l'aperçu
+    const [showImportOptions, setShowImportOptions] = useState(true);
 
     // ── Résolution de doublons ────────────────────────────────────────────────
     // "ignore" | "keep_first" | "keep_last" | "merge"
@@ -1191,6 +1189,7 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
     const reset = () => {
         setStep("upload"); setFileName(""); setHeaders([]); setRows([]); setColMapping({});
         setMatchedProfile(null); setAppliedProfileId(null); setShowProfiles(false);
+        setShowImportOptions(true);
         setDupStrategy("keep_first"); setDupDominant(null);
         setSkipExisting(true);
         setTagAgencies(isAgencyDetectionEnabled(workspace));
@@ -1204,39 +1203,38 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
         if (!v) setTimeout(reset, 250);
     };
 
-    // Lecture du fichier — commun aux deux modes
+    // Lecture du fichier → aperçu direct
     const handleFile = useCallback(async (file) => {
         try {
             const text = await file.text();
             const { headers: h, rows: r } = parseCsv(text);
             if (!h.length || !r.length) { toast.error("CSV vide ou illisible"); return; }
 
-            // ── Détection de profil ──────────────────────────────────────────
-            const match = findBestProfile(h);
-            setMatchedProfile(match);
-
-            let initMapping;
-            if (match) {
-                // Profil trouvé (auto ou suggéré) → appliquer + auto-détecter le reste
-                initMapping = applyProfile(h, match.profile, r);
-                setAppliedProfileId(match.profile.id);
-            } else {
-                // Aucun profil → détection automatique par nom/données
-                initMapping = buildInitialMapping(h, r);
-                setAppliedProfileId(null);
-            }
+            // ── Détection : profils (builtin + user) ou suggestion personnalisée ──
+            const resolved = resolveImportMapping(h, r, file.name);
+            setMatchedProfile(resolved);
+            setAppliedProfileId(
+                resolved?.profile?.personalized || String(resolved?.profile?.id || "").startsWith("suggest_")
+                    ? null
+                    : (resolved?.profile?.id || null)
+            );
+            const initMapping = resolved.colMapping
+                || (resolved.profile
+                    ? applyProfile(h, resolved.profile, r)
+                    : buildInitialMapping(h, r));
 
             setFileName(file.name);
             setHeaders(h);
             setRows(r);
             setColMapping(initMapping);
-            // Rester sur upload — l'utilisateur choisit le mode
+            setShowImportOptions(true);
+            setStep("preview");
         } catch (err) {
             toast.error("Erreur de lecture", { description: String(err) });
         }
     }, []);
 
-    // Lance l'import effectif (commun aux deux modes)
+    // Lance l'import effectif
     const doImport = useCallback((finalHeaders, finalRows, finalColMapping) => {
         if (importing) return;
         setImporting(true);
@@ -1381,26 +1379,26 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
 
     // Titre et description selon l'étape
     const stepMeta = {
-        "upload":           { title: "Importer un CSV", desc: fileLoaded ? `${fileName} — ${rows.length} lignes détectées` : "Déposez un fichier ou choisissez-en un." },
-        "quick-summary":    { title: "Confirmer l'import rapide", desc: `${fileName} — ${rows.length} lignes` },
-        "advanced-edit":    { title: "Éditeur de données", desc: `${fileName} — ${rows.length} lignes · Modifiez, corrigez, puis passez au récapitulatif.` },
-        "advanced-summary": { title: "Récapitulatif final", desc: `${fileName} — ${rows.length} lignes` },
+        "upload":  { title: "Importer un CSV", desc: "Déposez un fichier ou choisissez-en un." },
+        "preview": {
+            title: "Préparer l'import",
+            desc: `${fileName} — ${rows.length} lignes · Cochez les colonnes à importer, puis validez.`,
+        },
     };
     const { title, desc } = stepMeta[step] ?? stepMeta["upload"];
 
-    // Largeur de la dialog selon l'étape
-    const isEditor = step === "advanced-edit";
+    const isPreview = step === "preview";
 
     return (
         <Dialog open={open} onOpenChange={handleClose}>
             <DialogContent
                 data-testid="csv-import-modal"
                 className={`rounded-2xl shadow-panel flex flex-col transition-all duration-200 ${
-                    isEditor
+                    isPreview
                         ? "sm:max-w-[95vw] max-h-[92vh] h-[92vh]"
                         : "sm:max-w-[660px] max-h-[90vh]"
                 }`}
-                style={isEditor ? { width: "95vw" } : undefined}
+                style={isPreview ? { width: "95vw" } : undefined}
             >
                 <DialogHeader className="shrink-0 space-y-2">
                     <ImportStepper step={step} fileLoaded={fileLoaded} />
@@ -1413,256 +1411,173 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                 ════════════════════════════════════════ */}
                 {step === "upload" && (
                     <div className="flex-1 overflow-y-auto py-2 space-y-4">
-                        {!fileLoaded ? (
-                            <DropZone onFile={handleFile} />
-                        ) : (
-                            <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5">
-                                <div className="w-9 h-9 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                                    <CheckCircle2 size={16} />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium truncate">{fileName}</p>
-                                    <p className="text-[11px] text-muted-foreground">
-                                        {rows.length} ligne{rows.length > 1 ? "s" : ""} · {headers.filter(Boolean).length} colonne{headers.filter(Boolean).length > 1 ? "s" : ""}
-                                    </p>
-                                </div>
-                                <Button
+                        <DropZone onFile={handleFile} />
+                        <p className="text-center text-[12px] text-muted-foreground">
+                            Après le dépôt, vous pourrez choisir les colonnes et importer.
+                        </p>
+                    </div>
+                )}
+
+                {/* ════════════════════════════════════════
+                    ÉTAPE : APERÇU (tableau + options)
+                ════════════════════════════════════════ */}
+                {step === "preview" && (
+                    <div className="flex-1 min-h-0 overflow-hidden py-1 flex flex-col gap-2">
+                        {/* Bandeau profil / fichier */}
+                        <div className="shrink-0 flex items-center gap-2 flex-wrap">
+                            <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 min-w-0">
+                                <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                <span className="text-[12px] font-medium truncate max-w-[200px]">{fileName}</span>
+                                <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                                    {rows.length}×{headers.filter(Boolean).length}
+                                </span>
+                                <button
                                     type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-8 rounded-lg text-[12px] shrink-0"
                                     onClick={() => {
+                                        setStep("upload");
                                         setFileName(""); setHeaders([]); setRows([]); setColMapping({});
                                         setMatchedProfile(null); setAppliedProfileId(null); setNameHeader(null);
                                     }}
+                                    className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline shrink-0"
                                 >
                                     Changer
-                                </Button>
-                            </div>
-                        )}
-
-                        {fileLoaded && (
-                            <div className="space-y-2">
-                                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                                    Mapping détecté
-                                </p>
-                                <MappingChips headers={headers} colMapping={colMapping} nameHeader={nameHeader} />
-                            </div>
-                        )}
-
-                        {/* ── Bandeau profil reconnu ── */}
-                        {fileLoaded && matchedProfile && (
-                            <div className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${
-                                matchedProfile.isAuto
-                                    ? "border-emerald-500/40 bg-emerald-500/5"
-                                    : "border-amber-400/40 bg-amber-400/5"
-                            }`}>
-                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                                    matchedProfile.isAuto ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                                    : "bg-amber-400/15 text-amber-600 dark:text-amber-400"
-                                }`}>
-                                    {matchedProfile.isAuto ? <Sparkles size={15} /> : <BookMarked size={15} />}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <p className={`text-sm font-semibold ${
-                                        matchedProfile.isAuto
-                                            ? "text-emerald-700 dark:text-emerald-400"
-                                            : "text-amber-700 dark:text-amber-400"
-                                    }`}>
-                                        {matchedProfile.isAuto
-                                            ? `Profil « ${matchedProfile.profile.name} » appliqué automatiquement`
-                                            : `Profil « ${matchedProfile.profile.name} » suggéré (${Math.round(matchedProfile.score * 100)}% de correspondance)`}
-                                    </p>
-                                    <p className="text-[11.5px] text-muted-foreground mt-0.5">
-                                        {matchedProfile.isAuto
-                                            ? "Le mapping a été configuré automatiquement. Vérifiez si besoin dans l'éditeur."
-                                            : matchedProfile.newHeaders.length > 0
-                                                ? `${matchedProfile.newHeaders.length} nouvelle${matchedProfile.newHeaders.length > 1 ? "s" : ""} colonne${matchedProfile.newHeaders.length > 1 ? "s" : ""} à compléter : ${matchedProfile.newHeaders.slice(0, 3).join(", ")}${matchedProfile.newHeaders.length > 3 ? "…" : ""}`
-                                                : "Le mapping est prêt, vérifiez avant d'importer."
-                                        }
-                                    </p>
-                                </div>
-                                <button
-                                    onClick={() => {
-                                        setMatchedProfile(null);
-                                        setColMapping(buildInitialMapping(headers, rows));
-                                        setAppliedProfileId(null);
-                                    }}
-                                    title="Ignorer ce profil et utiliser la détection automatique"
-                                    className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-                                    <X size={12} />
                                 </button>
                             </div>
-                        )}
 
-                        {/* Choix du mode — apparaît dès qu'un fichier est chargé */}
-                        {fileLoaded && (
-                            <div className="space-y-3">
-                                <p className="text-sm text-muted-foreground text-center">
-                                    Choisissez votre mode d'import
-                                </p>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    {/* Import rapide */}
+                            {matchedProfile && (
+                                <div className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 min-w-0 ${
+                                    matchedProfile.isAuto
+                                        ? "border-emerald-500/40 bg-emerald-500/5"
+                                        : "border-amber-400/40 bg-amber-400/5"
+                                }`}>
+                                    {matchedProfile.isAuto
+                                        ? <Sparkles size={12} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                        : <BookMarked size={12} className="text-amber-600 dark:text-amber-400 shrink-0" />}
+                                    <span className="text-[11px] font-medium truncate max-w-[220px]">
+                                        {matchedProfile.isPersonalized
+                                            ? `Mapping « ${matchedProfile.profile.name} »`
+                                            : `Profil « ${matchedProfile.profile.name} »`}
+                                    </span>
                                     <button
-                                        data-testid="csv-quick-import-btn"
-                                        onClick={() => setStep("quick-summary")}
-                                        className="group rounded-2xl border-2 border-primary bg-primary/5 hover:bg-primary/10 p-5 text-left transition-colors flex flex-col gap-2">
-                                        <div className="flex items-center gap-2">
-                                            <div className="w-9 h-9 rounded-xl bg-primary/15 text-primary flex items-center justify-center">
-                                                <Zap size={18} />
-                                            </div>
-                                            <span className="font-semibold text-[15px] text-foreground">Import rapide</span>
-                                        </div>
-                                        <p className="text-[12.5px] text-muted-foreground leading-relaxed">
-                                            Vérifiez le récap (doublons, colonnes) puis importez en un clic.
-                                        </p>
-                                    </button>
-
-                                    {/* Mode avancé */}
-                                    <button
-                                        data-testid="csv-advanced-btn"
-                                        onClick={() => setStep("advanced-edit")}
-                                        className="group rounded-2xl border-2 border-border hover:border-foreground/30 bg-card p-5 text-left transition-colors flex flex-col gap-2">
-                                        <div className="flex items-center gap-2">
-                                            <div className="w-9 h-9 rounded-xl bg-secondary text-foreground flex items-center justify-center">
-                                                <Settings2 size={18} />
-                                            </div>
-                                            <span className="font-semibold text-[15px] text-foreground">Modifier avant l'import</span>
-                                        </div>
-                                        <p className="text-[12.5px] text-muted-foreground leading-relaxed">
-                                            Corrigez cellules, mapping et lignes — sans ouvrir Excel.
-                                        </p>
+                                        type="button"
+                                        onClick={() => {
+                                            setMatchedProfile(null);
+                                            setColMapping(buildInitialMapping(headers, rows));
+                                            setAppliedProfileId(null);
+                                        }}
+                                        title="Ignorer ce profil"
+                                        className="shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted"
+                                    >
+                                        <X size={10} />
                                     </button>
                                 </div>
+                            )}
+
+                            <button
+                                type="button"
+                                onClick={() => setShowProfiles((v) => !v)}
+                                className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                            >
+                                <BookMarked size={12} />
+                                Profils
+                                {showProfiles ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                            </button>
+                        </div>
+
+                        {showProfiles && (
+                            <div className="shrink-0 max-h-[160px] overflow-y-auto rounded-xl border border-border p-3">
+                                <ImportProfilesManager
+                                    currentHeaders={headers}
+                                    currentColMapping={colMapping}
+                                    canSave={fileLoaded}
+                                    onApply={(profile) => {
+                                        const applied = applyProfile(headers, profile, rows);
+                                        setColMapping(applied);
+                                        setAppliedProfileId(profile.id);
+                                        setMatchedProfile({
+                                            profile, score: 1,
+                                            isAuto: false, isSuggested: true, newHeaders: [],
+                                        });
+                                        setShowProfiles(false);
+                                        toast.success(`Profil « ${profile.name} » appliqué`);
+                                    }}
+                                    onSaveCurrent={(name) => {
+                                        const saved = saveProfile({ name, headers, colMapping });
+                                        setAppliedProfileId(saved.id);
+                                        toast.success(`Profil « ${name} » enregistré`);
+                                    }}
+                                    onUpdateProfile={(id) => {
+                                        const updated = updateProfileMapping(id, { headers, colMapping });
+                                        if (updated) {
+                                            setAppliedProfileId(updated.id);
+                                            toast.success(`Profil « ${updated.name} » mis à jour`);
+                                        }
+                                    }}
+                                    appliedProfileId={appliedProfileId}
+                                />
                             </div>
                         )}
 
-                        {/* ── Panneau profils (toujours accessible, replié par défaut) ── */}
-                        <div className="border-t border-border/50 pt-3">
-                            <button
-                                onClick={() => setShowProfiles((v) => !v)}
-                                className="flex items-center gap-2 text-[12px] text-muted-foreground hover:text-foreground transition-colors w-full">
-                                <BookMarked size={13} />
-                                <span className="font-medium">Profils d'import enregistrés</span>
-                                {showProfiles ? <ChevronUp size={12} className="ml-auto" /> : <ChevronDown size={12} className="ml-auto" />}
-                            </button>
-                            {showProfiles && (
-                                <div className="mt-3">
-                                    <ImportProfilesManager
-                                        currentHeaders={headers}
-                                        currentColMapping={colMapping}
-                                        canSave={fileLoaded}
-                                        onApply={(profile) => {
-                                            const applied = applyProfile(headers, profile, rows);
-                                            setColMapping(applied);
-                                            setAppliedProfileId(profile.id);
-                                            setMatchedProfile({
-                                                profile, score: 1,
-                                                isAuto: false, isSuggested: true, newHeaders: [],
-                                            });
-                                            setShowProfiles(false);
-                                            toast.success(`Profil « ${profile.name} » appliqué`);
-                                        }}
-                                        onSaveCurrent={(name) => {
-                                            const saved = saveProfile({ name, headers, colMapping });
-                                            setAppliedProfileId(saved.id);
-                                            toast.success(`Profil « ${name} » enregistré`);
-                                        }}
-                                        onUpdateProfile={(id) => {
-                                            const updated = updateProfileMapping(id, { headers, colMapping });
-                                            if (updated) {
-                                                setAppliedProfileId(updated.id);
-                                                toast.success(`Profil « ${updated.name} » mis à jour`);
-                                            }
-                                        }}
-                                        appliedProfileId={appliedProfileId}
-                                    />
-                                </div>
-                            )}
+                        <div className="flex-1 min-h-0 overflow-hidden">
+                            <AdvancedEditor
+                                headers={headers}
+                                rows={rows}
+                                colMapping={colMapping}
+                                nameHeader={nameHeader}
+                                onHeadersChange={(newHeaders, newMapping) => {
+                                    setHeaders(newHeaders);
+                                    setColMapping(newMapping);
+                                }}
+                                onRowsChange={setRows}
+                                onMappingChange={setColMapping}
+                                onNameHeaderChange={setNameHeader}
+                            />
                         </div>
-                    </div>
-                )}
 
-                {/* ════════════════════════════════════════
-                    ÉTAPE : RÉCAPITULATIF RAPIDE
-                ════════════════════════════════════════ */}
-                {step === "quick-summary" && summary && (
-                    <div className="flex-1 overflow-y-auto py-2">
-                        <Summary
-                            fileName={fileName}
-                            rowCount={rows.length}
-                            summary={summary}
-                            headers={headers}
-                            colMapping={colMapping}
-                            nameHeader={nameHeader}
-                            dupStrategy={dupStrategy}
-                            dupDominant={dupDominant}
-                            onDupStrategyChange={setDupStrategy}
-                            onDupDominantChange={setDupDominant}
-                            skipExisting={skipExisting}
-                            onSkipExistingChange={setSkipExisting}
-                            existingLeadCount={Object.keys(workspace?.leads || {}).length}
-                            netEstimate={displayNetEstimate}
-                            onEditMapping={() => setStep("advanced-edit")}
-                            qualityScan={qualityScan}
-                            agencyDetectionOn={agencyDetectionOn}
-                            tagAgencies={tagAgencies}
-                            onTagAgenciesChange={setTagAgencies}
-                            excludeClosedAds={excludeClosedAds}
-                            onExcludeClosedAdsChange={setExcludeClosedAds}
-                        />
-                    </div>
-                )}
-
-                {/* ════════════════════════════════════════
-                    ÉTAPE : ÉDITEUR AVANCÉ
-                ════════════════════════════════════════ */}
-                {step === "advanced-edit" && (
-                    <div className="flex-1 min-h-0 overflow-hidden py-1">
-                        <AdvancedEditor
-                            headers={headers}
-                            rows={rows}
-                            colMapping={colMapping}
-                            nameHeader={nameHeader}
-                            onHeadersChange={(newHeaders, newMapping) => {
-                                setHeaders(newHeaders);
-                                setColMapping(newMapping);
-                            }}
-                            onRowsChange={setRows}
-                            onMappingChange={setColMapping}
-                            onNameHeaderChange={setNameHeader}
-                        />
-                    </div>
-                )}
-
-                {/* ════════════════════════════════════════
-                    ÉTAPE : RÉCAPITULATIF AVANCÉ
-                ════════════════════════════════════════ */}
-                {step === "advanced-summary" && summary && (
-                    <div className="flex-1 overflow-y-auto py-2">
-                        <Summary
-                            fileName={fileName}
-                            rowCount={rows.length}
-                            summary={summary}
-                            headers={headers}
-                            colMapping={colMapping}
-                            nameHeader={nameHeader}
-                            dupStrategy={dupStrategy}
-                            dupDominant={dupDominant}
-                            onDupStrategyChange={setDupStrategy}
-                            onDupDominantChange={setDupDominant}
-                            skipExisting={skipExisting}
-                            onSkipExistingChange={setSkipExisting}
-                            existingLeadCount={Object.keys(workspace?.leads || {}).length}
-                            netEstimate={displayNetEstimate}
-                            onEditMapping={() => setStep("advanced-edit")}
-                            qualityScan={qualityScan}
-                            agencyDetectionOn={agencyDetectionOn}
-                            tagAgencies={tagAgencies}
-                            onTagAgenciesChange={setTagAgencies}
-                            excludeClosedAds={excludeClosedAds}
-                            onExcludeClosedAdsChange={setExcludeClosedAds}
-                        />
+                        {/* Options d'import (doublons, qualité…) fusionnées ici */}
+                        {summary && (
+                            <div className="shrink-0 border border-border rounded-xl overflow-hidden">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowImportOptions((v) => !v)}
+                                    className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/30 transition-colors"
+                                >
+                                    <span className="text-[12px] font-medium text-foreground">Options d'import</span>
+                                    <span className="text-[11px] text-muted-foreground tabular-nums">
+                                        → {displayNetEstimate?.net ?? rows.length} lead{(displayNetEstimate?.net ?? rows.length) !== 1 ? "s" : ""}
+                                    </span>
+                                    {showImportOptions
+                                        ? <ChevronUp size={12} className="ml-auto text-muted-foreground" />
+                                        : <ChevronDown size={12} className="ml-auto text-muted-foreground" />}
+                                </button>
+                                {showImportOptions && (
+                                    <div className="px-3 pb-3 max-h-[220px] overflow-y-auto border-t border-border/60">
+                                        <Summary
+                                            compact
+                                            showMapping={false}
+                                            fileName={fileName}
+                                            rowCount={rows.length}
+                                            summary={summary}
+                                            headers={headers}
+                                            colMapping={colMapping}
+                                            nameHeader={nameHeader}
+                                            dupStrategy={dupStrategy}
+                                            onDupStrategyChange={setDupStrategy}
+                                            skipExisting={skipExisting}
+                                            onSkipExistingChange={setSkipExisting}
+                                            existingLeadCount={Object.keys(workspace?.leads || {}).length}
+                                            netEstimate={displayNetEstimate}
+                                            qualityScan={qualityScan}
+                                            agencyDetectionOn={agencyDetectionOn}
+                                            tagAgencies={tagAgencies}
+                                            onTagAgenciesChange={setTagAgencies}
+                                            excludeClosedAds={excludeClosedAds}
+                                            onExcludeClosedAdsChange={setExcludeClosedAds}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -1671,25 +1586,22 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                 ════════════════════════════════════════ */}
                 <DialogFooter className="shrink-0 pt-2 border-t border-border/60 flex-wrap gap-2">
 
-                    {/* Retour */}
-                    {step !== "upload" && (
+                    {step === "preview" && (
                         <Button variant="ghost" data-testid="csv-back-btn"
                             onClick={() => {
-                                if (step === "quick-summary")    setStep("upload");
-                                if (step === "advanced-edit")    setStep("upload");
-                                if (step === "advanced-summary") setStep("advanced-edit");
+                                setStep("upload");
+                                setFileName(""); setHeaders([]); setRows([]); setColMapping({});
+                                setMatchedProfile(null); setAppliedProfileId(null); setNameHeader(null);
                             }}>
                             <ArrowLeft size={15} className="mr-1.5" />Retour
                         </Button>
                     )}
 
-                    {/* Annuler */}
                     <Button variant="ghost" onClick={() => handleClose(false)} data-testid="csv-cancel-btn">
                         Annuler
                     </Button>
 
-                    {/* Bouton sauvegarder / mettre à jour profil */}
-                    {(step === "quick-summary" || step === "advanced-summary" || step === "advanced-edit") && (
+                    {step === "preview" && (
                         <SaveProfileButton
                             appliedProfileId={appliedProfileId}
                             appliedProfileName={appliedProfileId ? getProfile(appliedProfileId)?.name : null}
@@ -1706,37 +1618,7 @@ export const CsvImportModal = ({ open, onOpenChange, workspaceId }) => {
                         />
                     )}
 
-                    {/* CTA principal selon l'étape */}
-                    {step === "upload" && fileLoaded && (
-                        <Button onClick={() => setStep("quick-summary")}
-                            data-testid="csv-quick-confirm-btn"
-                            className="bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5">
-                            <Zap size={14} />
-                            Continuer →
-                        </Button>
-                    )}
-
-                    {step === "quick-summary" && (
-                        <Button data-testid="csv-confirm-btn"
-                            disabled={importing || (displayNetEstimate?.net === 0)}
-                            onClick={() => doImport(headers, rows, colMapping)}
-                            className="bg-primary hover:bg-primary/90 text-primary-foreground">
-                            {importing ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <CheckCircle2 size={14} className="mr-1.5" />}
-                            {importing
-                                ? "Import…"
-                                : `Importer ${displayNetEstimate?.net ?? rows.length} lead${(displayNetEstimate?.net ?? rows.length) !== 1 ? "s" : ""}`}
-                        </Button>
-                    )}
-
-                    {step === "advanced-edit" && (
-                        <Button data-testid="csv-advanced-next-btn"
-                            onClick={() => setStep("advanced-summary")}
-                            className="bg-primary hover:bg-primary/90 text-primary-foreground">
-                            Récapitulatif →
-                        </Button>
-                    )}
-
-                    {step === "advanced-summary" && (
+                    {step === "preview" && (
                         <Button data-testid="csv-confirm-btn"
                             disabled={importing || (displayNetEstimate?.net === 0)}
                             onClick={() => doImport(headers, rows, colMapping)}

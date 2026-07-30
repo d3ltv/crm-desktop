@@ -6,6 +6,7 @@ import { parseNote, detectAppointment, diffWithLead } from "@/lib/noteParser";
 import { makeRdvNextAction } from "@/lib/nextActionUtils";
 import { toLocalDateKey } from "@/lib/dateUtils";
 import { allocateMainDupeLabels } from "@/lib/customFields";
+import { resolvePipelineColumnId } from "@/lib/pipelineRoles";
 import { toast } from "sonner";
 
 /**
@@ -97,8 +98,10 @@ export function applySafeTranscriptFields(dispatch, { workspaceId, leadId, lead,
 
 /**
  * Propose un RDV détecté sans l'écrire tout de suite (évite faux positifs Whisper).
+ * Sur confirm « Planifier » : nextAction + déplacement vers colonne Rendez-vous
+ * (même logique que CallNoteModal).
  */
-export function offerDetectedAppointment(dispatch, { workspaceId, leadId, appointment }) {
+export function offerDetectedAppointment(dispatch, { workspaceId, leadId, appointment, workspace }) {
     if (!appointment?.iso) return;
 
     toast.message(`Date détectée · ${appointment.label}`, {
@@ -117,8 +120,23 @@ export function offerDetectedAppointment(dispatch, { workspaceId, leadId, appoin
                             dueAt: appointment.iso,
                             label: appointment.label,
                         }),
+                        autoFollowup: null,
                     },
                 });
+
+                const ws = workspace;
+                const meetingColumnId = ws ? resolvePipelineColumnId(ws, "rdv") : null;
+                const lead = ws?.leads?.[leadId];
+                if (meetingColumnId && lead && lead.columnId !== meetingColumnId) {
+                    dispatch({
+                        type: "MOVE_LEAD_ORDERED",
+                        workspaceId,
+                        leadId,
+                        toColumnId: meetingColumnId,
+                        toIndex: null,
+                    });
+                }
+
                 toast.success("RDV planifié", { description: appointment.label });
             },
         },

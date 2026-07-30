@@ -237,6 +237,31 @@ function scheduleInfo(lead, todayKey, now) {
     };
 }
 
+/**
+ * RDV détecté dans notes/transcript mais pas encore planifié.
+ * S'il y a une date future → la suite est déjà engagée : ce n'est pas un « oubli de relance ».
+ */
+function pendingDetectedAppointment(lead, now = new Date()) {
+    if (isManualRdv(lead?.nextAction)) {
+        const due = lead.nextAction?.dueAt || lead.nextAction?.date;
+        if (due && new Date(due).getTime() >= now.getTime() - 2 * 60 * 60 * 1000) {
+            return null;
+        }
+    }
+    const notes = lead?.notes || [];
+    const callCorpus = notes
+        .filter((n) => n?.recordingId && String(n?.transcript || "").trim())
+        .map((n) => String(n.transcript).trim())
+        .join("\n");
+    const allNotes = notes.map((n) => String(n?.transcript || n?.text || "").trim()).filter(Boolean).join("\n");
+    const appt = (callCorpus && detectAppointment(callCorpus)) || detectAppointment(allNotes);
+    if (!appt?.iso) return null;
+    if (new Date(appt.iso).getTime() < now.getTime() - 2 * 60 * 60 * 1000) return null;
+    const existingDue = lead?.nextAction?.dueAt || lead?.nextAction?.date;
+    if (existingDue && toLocalDateKey(existingDue) === toLocalDateKey(appt.iso)) return null;
+    return appt;
+}
+
 function selectDiverse(candidates, limit) {
     candidates.sort((a, b) => (b.score || 0) - (a.score || 0) || (a.due || 0) - (b.due || 0));
     const seenLeads = new Set();
@@ -340,6 +365,9 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         const idleDays = activity != null ? daysBetween(activity, now) : daysBetween(lead.createdAt, now);
         const createdDays = daysBetween(lead.createdAt, now) ?? 0;
         const sched = scheduleInfo(lead, todayKey, now);
+        const pendingAppt = pendingDetectedAppointment(lead, now);
+        // Suite déjà engagée (planifiée OU RDV détecté à planifier) → pas d'« oubli »
+        const hasNextStep = sched.has || !!pendingAppt;
         const reachedAt = lastReachedAt(lead);
         const reachedDays = reachedAt ? daysBetween(reachedAt, now) : null;
         const interest = hasInterestSignal(lead);
@@ -363,7 +391,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
             && reachedDays <= 2
             && (interest || Number(lead.dealValue) > 0 || inProp);
 
-        if (isHot && (!calendarOwns || sched.overdue) && !sched.has) {
+        if (isHot && !pendingAppt && (!calendarOwns || sched.overdue) && !sched.has) {
             hotLeads += 1;
             rdvOpportunities += 1;
             push({
@@ -415,7 +443,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
                         dueAt: sched.dueAt,
                     });
                 }
-            } else if (!sched.has) {
+            } else if (!sched.has && !pendingAppt) {
                 rdvOpportunities += 1;
                 const why = inProp
                     ? `En proposition sans ${profile.rdvNoun}`
@@ -444,7 +472,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         }
 
         // Callback « plus tard » sans date → pose le rappel
-        if (!calendarOwns && !sched.has && later && !objection) {
+        if (!calendarOwns && !hasNextStep && later && !objection) {
             push({
                 key: `${workspace.id}:${lead.id}:callback_later:${todayKey}`,
                 lead,
@@ -515,7 +543,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         // ── Bloqué trop longtemps dans la colonne ───────────────────────────
         if (
             !skipGeneric
-            && !sched.has
+            && !hasNextStep
             && daysInCol != null
             && daysInCol >= profile.stuckColumnDays
             && !isNouveauColumn(colName)
@@ -541,7 +569,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         // ── NRP répétés → changer de canal ──────────────────────────────────
         if (
             !skipGeneric
-            && !sched.has
+            && !hasNextStep
             && calls.reached === 0
             && calls.nrp >= profile.nrpChannelSwitch
             && (lead.email || lead.phone)
@@ -561,7 +589,8 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         }
 
         // ── Oubli : NRP sans suite (si pas déjà channel_switch prioritaire) ─
-        if (!skipGeneric && !sched.has && calls.nrp < profile.nrpChannelSwitch) {
+        // Un RDV détecté (même non planifié) = la relance est engagée → silence.
+        if (!skipGeneric && !hasNextStep && calls.nrp < profile.nrpChannelSwitch) {
             const nrpAt = lastNoAnswerAt(lead);
             if (nrpAt && calls.lastOutcome === "nrp") {
                 const d = daysBetween(nrpAt, now);
@@ -586,7 +615,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         }
 
         // ── Nouveau qui dort ────────────────────────────────────────────────
-        if (!skipGeneric && !sched.has && isNouveauColumn(colName) && createdDays >= profile.staleNouveauDays) {
+        if (!skipGeneric && !hasNextStep && isNouveauColumn(colName) && createdDays >= profile.staleNouveauDays) {
             staleNouveau += 1;
             const boost = bucket === "morning" && profile.preferMorningCalls ? 15
                 : bucket === "morning" ? 8
@@ -623,7 +652,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         }
 
         // ── Contacté / rappel sans prochain geste ───────────────────────────
-        if (!skipGeneric && !sched.has && (isContactedColumn(colName) || inRappel)) {
+        if (!skipGeneric && !hasNextStep && (isContactedColumn(colName) || inRappel)) {
             const since = idleDays ?? createdDays;
             if (since >= profile.staleContactedDays) {
                 push({
@@ -660,7 +689,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         }
 
         // ── Proposition sans suite ──────────────────────────────────────────
-        if (!skipGeneric && !sched.has && inProp && (idleDays ?? 0) >= 2) {
+        if (!skipGeneric && !hasNextStep && inProp && (idleDays ?? 0) >= 2) {
             stuckProp += 1;
             push({
                 key: `${workspace.id}:${lead.id}:stale_prop:${todayKey}`,
@@ -752,7 +781,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         }
 
         // ── Objection dure sans classement Perdu ────────────────────────────
-        if (!skipGeneric && !sched.has && objection && (idleDays ?? 0) >= 3) {
+        if (!skipGeneric && !hasNextStep && objection && (idleDays ?? 0) >= 3) {
             push({
                 key: `${workspace.id}:${lead.id}:close_or_park:${todayKey}`,
                 lead,
@@ -767,7 +796,7 @@ export function getWorkspaceFollowupNotifs(workspace, opts = {}) {
         }
 
         // ── Silence long sans agenda ────────────────────────────────────────
-        if (!skipGeneric && !sched.has && idleDays != null && idleDays >= profile.coldGapDays) {
+        if (!skipGeneric && !hasNextStep && idleDays != null && idleDays >= profile.coldGapDays) {
             push({
                 key: `${workspace.id}:${lead.id}:cold_gap:${todayKey}`,
                 lead,

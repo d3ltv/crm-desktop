@@ -112,7 +112,17 @@ export const WorkspacePage = () => {
     const prevLeadIdsRef = useRef(null);
     // Leads déplacés automatiquement depuis CallNoteModal (avec RDV déjà défini)
     // → on supprime l'ouverture de MeetingModal et d'un 2e CallNoteModal pour ces leads
+    // Aussi : LOG_RELANCE / LOG_CONTACT (email envoyé etc.) — déjà notés, pas de Joint/NRP
     const suppressModalForLeadRef = useRef(new Set());
+
+    useEffect(() => {
+        const onSuppress = (e) => {
+            const leadId = e?.detail?.leadId;
+            if (leadId) suppressModalForLeadRef.current.add(leadId);
+        };
+        window.addEventListener(RELIA_EVENTS.SUPPRESS_CALL_NOTE, onSuppress);
+        return () => window.removeEventListener(RELIA_EVENTS.SUPPRESS_CALL_NOTE, onSuppress);
+    }, []);
 
     const onNewLead = (columnId) => {
         if (!workspace) return;

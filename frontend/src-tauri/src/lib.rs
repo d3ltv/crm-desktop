@@ -7,6 +7,9 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
+mod align;
+mod whisper_native;
+
 fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -337,10 +340,99 @@ fn crm_open_url(url: String) -> Result<(), String> {
     Err("plateforme non supportée".into())
 }
 
+/// Relia Console : lance publish-update.sh ou set-official.sh (GH_TOKEN injecté).
+#[tauri::command]
+fn crm_console_run_script(
+    script: String,
+    args: Vec<String>,
+    github_token: Option<String>,
+    set_version: Option<String>,
+) -> Result<String, String> {
+    let allowed = ["publish-update.sh", "set-official.sh"];
+    if !allowed.contains(&script.as_str()) {
+        return Err(format!("script non autorisé: {script}"));
+    }
+
+    let resource = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    let candidates = [
+        PathBuf::from("scripts").join(&script),
+        PathBuf::from("../scripts").join(&script),
+        PathBuf::from("frontend/scripts").join(&script),
+    ];
+    let mut script_path = None;
+    for c in &candidates {
+        if c.is_file() {
+            script_path = Some(c.clone());
+            break;
+        }
+    }
+    if script_path.is_none() {
+        if let Some(dir) = resource {
+            let p = dir.join("scripts").join(&script);
+            if p.is_file() {
+                script_path = Some(p);
+            }
+        }
+    }
+    let script_path = script_path.ok_or_else(|| {
+        format!("Script introuvable: {script} (lance la Console depuis frontend/)")
+    })?;
+
+    let work_dir = script_path
+        .parent()
+        .and_then(|scripts| scripts.parent())
+        .ok_or_else(|| "work dir".to_string())?
+        .to_path_buf();
+
+    let key_path = work_dir.join("src-tauri/.updater-keys/relia.key");
+
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg(&script_path);
+    for a in &args {
+        cmd.arg(a);
+    }
+    cmd.current_dir(&work_dir);
+    if let Some(token) = github_token.filter(|t| !t.trim().is_empty()) {
+        cmd.env("GH_TOKEN", token.trim());
+        cmd.env("GITHUB_TOKEN", token.trim());
+    }
+    if let Some(ver) = set_version.filter(|v| !v.trim().is_empty()) {
+        cmd.env("RELIA_SET_VERSION", ver.trim().trim_start_matches('v'));
+    }
+    if key_path.is_file() {
+        cmd.env(
+            "TAURI_SIGNING_PRIVATE_KEY_PATH",
+            key_path.to_string_lossy().as_ref(),
+        );
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("spawn {script}: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        return Err(format!(
+            "Échec {script} (code {:?})\n{stderr}\n{stdout}",
+            output.status.code()
+        ));
+    }
+    Ok(if stdout.trim().is_empty() {
+        stderr
+    } else {
+        stdout
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .manage(align::PendingAlign(std::sync::Mutex::new(None)))
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -349,6 +441,11 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // Updater = remplace Relia.app seulement. Les data restent dans app_data_dir
+            // (crm_state_v1.json, recordings/, …) — ne jamais changer identifier.
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             let _ = data_dir(app.handle());
             let _ = recordings_dir(app.handle());
             Ok(())
@@ -367,7 +464,13 @@ pub fn run() {
             crm_list_recordings,
             crm_delete_recording,
             crm_update_recording_meta,
-            crm_open_url
+            crm_open_url,
+            align::crm_align_check,
+            align::crm_align_install,
+            align::crm_align_clear,
+            crm_console_run_script,
+            whisper_native::crm_whisper_status,
+            whisper_native::crm_whisper_transcribe
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

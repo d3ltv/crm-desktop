@@ -58,9 +58,9 @@ export function decideEngineConfig() {
 export function getDecodeParams() {
     const slow = medianRtf() != null && medianRtf() < SLOW_RTF;
     return slow
-        // Chunks plus courts = pics mémoire plus bas + feedback plus fréquent
-        ? { chunk_length_s: 20, stride_length_s: 4 }
-        : { chunk_length_s: 30, stride_length_s: 5 };
+        // Chunks plus courts = pics mémoire plus bas (surtout whisper-small)
+        ? { chunk_length_s: 16, stride_length_s: 3 }
+        : { chunk_length_s: 22, stride_length_s: 4 };
 }
 
 function medianRtf() {

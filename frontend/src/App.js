@@ -6,6 +6,9 @@ import { WorkspacesPage } from "@/components/WorkspacesPage";
 import { WorkspacePage } from "@/components/WorkspacePage";
 import { CrashRecovery } from "@/components/CrashRecovery";
 import { Relia2FeatureTour } from "@/components/Relia2FeatureTour";
+import { AppUpdateBanner } from "@/components/AppUpdateBanner";
+import { ReliaConsoleApp } from "@/components/ReliaConsoleApp";
+import { isReliaConsole } from "@/lib/reliaVariant";
 import { Toaster } from "sonner";
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -30,6 +33,7 @@ function Router() {
             {state.currentId ? <WorkspacePage /> : <WorkspacesPage />}
             {/* Relia 2 export-only — assistant proactif (no-op hors variant) */}
             <Relia2FeatureTour />
+            <AppUpdateBanner />
         </>
     );
 }
@@ -109,6 +113,23 @@ class ErrorBoundary extends React.Component {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
+    if (isReliaConsole) {
+        return (
+            <ErrorBoundary>
+                <div className="App min-h-screen bg-background text-foreground">
+                    <ReliaConsoleApp />
+                    <Toaster
+                        position="top-center"
+                        toastOptions={{
+                            className:
+                                "rounded-full !shadow-panel !bg-card !text-card-foreground !border-border",
+                        }}
+                    />
+                </div>
+            </ErrorBoundary>
+        );
+    }
+
     return (
         <ErrorBoundary>
             <CrmProvider>

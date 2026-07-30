@@ -11,10 +11,11 @@ import { formatDuration, pickAudioMimeType, saveCallRecording, deleteCallRecordi
 import { openProcessedMic, createCallRecorder } from "@/lib/audioCapture";
 import { startPeakSampler } from "@/components/AudioWaveform";
 import { VoiceFloatingDock } from "@/components/VoiceFloatingDock";
+import { TranscribeProgressPill } from "@/components/TranscribeProgressPill";
 import { AttachCallLeadDialog } from "@/components/AttachCallLeadDialog";
 import { openLeadFromCalendar } from "@/lib/calendarEvents";
 import { applySafeTranscriptFields, offerDetectedAppointment } from "@/lib/transcriptSideEffects";
-import { transcribeAudioBlob, transcribeMono16k, isTranscribeSupported, warmupWhisper } from "@/lib/transcribeLocal";
+import { transcribeAudioBlob, transcribeMono16k, isTranscribeSupported, warmupWhisper, lastSpeakerFromTranscript } from "@/lib/transcribeLocal";
 import { holdAlive, releaseHold } from "@/lib/whisperGovernor";
 import { createLivePcmBuffer } from "@/lib/livePcmCapture";
 import {
@@ -30,6 +31,10 @@ const VoiceSessionContext = createContext(null);
 const PRE_TRANSCRIBE_CHUNK_MS = 10 * 60 * 1000;
 const PRE_TRANSCRIBE_POLL_MS = 20_000;
 
+function makeNoteId() {
+    return `note_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function VoiceSessionProvider({ children }) {
     const { state, dispatch } = useCrm();
 
@@ -41,6 +46,9 @@ export function VoiceSessionProvider({ children }) {
     const [saving, setSaving] = useState(false);
     const [busyLabel, setBusyLabel] = useState("");
     const [attachOpen, setAttachOpen] = useState(false);
+    /** @type {[{ percent: number, label: string, detail: string }|null, Function]} */
+    const [transcribeJob, setTranscribeJob] = useState(null);
+    const transcribeJobGenRef = useRef(0);
 
     const mediaRecorderRef = useRef(null);
     const captureCleanupRef = useRef(null);
@@ -92,6 +100,9 @@ export function VoiceSessionProvider({ children }) {
                 onProgress: (p) => {
                     if (p?.message) setBusyLabel(p.message);
                 },
+                startSpeaker: lastSpeakerFromTranscript(
+                    partialTranscriptsRef.current[partialTranscriptsRef.current.length - 1] || ""
+                ),
             });
             if (text && statusRef.current === "recording") {
                 partialTranscriptsRef.current.push(text);
@@ -311,6 +322,128 @@ export function VoiceSessionProvider({ children }) {
         recorder.stop();
     }, [cleanupStream]);
 
+    const applyTranscriptToLead = useCallback((workspaceId, leadId, noteId, transcript) => {
+        if (!transcript) return;
+        dispatch({
+            type: "UPDATE_NOTE",
+            workspaceId,
+            leadId,
+            noteId,
+            patch: {
+                text: "📞 Joint · Note d'appel",
+                transcript,
+            },
+        });
+        const ws = state.workspaces?.[workspaceId];
+        const lead = ws?.leads?.[leadId];
+        if (!lead) return;
+        const side = applySafeTranscriptFields(dispatch, {
+            workspaceId,
+            leadId,
+            lead: { ...lead, notes: [{ id: noteId, transcript, text: "📞 Joint · Note d'appel" }, ...(lead.notes || [])] },
+            text: transcript,
+            isJobs: ws?.template === "jobs",
+        });
+        if (side?.appointment) {
+            offerDetectedAppointment(dispatch, {
+                workspaceId,
+                leadId,
+                appointment: side.appointment,
+                workspace: ws,
+            });
+        }
+    }, [dispatch, state.workspaces]);
+
+    /**
+     * Transcription hors UI bloquante — pastille de progression + CRM libre.
+     */
+    const runBackgroundTranscribe = useCallback(async ({
+        blob = null,
+        pcmSlices = null,
+        workspaceId,
+        leadId,
+        noteId,
+        leadLabel = "Prospect",
+    }) => {
+        if (!workspaceId || !leadId || !noteId) return;
+        if (!isTranscribeSupported()) return;
+        if (!blob && !(pcmSlices?.length)) return;
+
+        const gen = ++transcribeJobGenRef.current;
+        setTranscribeJob({
+            percent: 1,
+            label: "Transcription",
+            detail: leadLabel,
+        });
+
+        const onProgress = (p) => {
+            if (transcribeJobGenRef.current !== gen) return;
+            const pct = typeof p?.progress === "number" ? p.progress : null;
+            setTranscribeJob((prev) => ({
+                percent: pct != null ? pct : (prev?.percent || 2),
+                label: p?.message || "Transcription",
+                detail: leadLabel,
+            }));
+        };
+
+        try {
+            let transcript = "";
+            if (pcmSlices?.length) {
+                const parts = [];
+                let speaker = 1;
+                for (let i = 0; i < pcmSlices.length; i += 1) {
+                    if (transcribeJobGenRef.current !== gen) return;
+                    const slice = pcmSlices[i];
+                    if (!slice) continue;
+                    onProgress({
+                        message: pcmSlices.length > 1
+                            ? `Transcription ${i + 1}/${pcmSlices.length}…`
+                            : "Transcription…",
+                        progress: Math.round((i / Math.max(1, pcmSlices.length)) * 100),
+                    });
+                    const text = await transcribeMono16k(slice, {
+                        onProgress,
+                        startSpeaker: speaker,
+                    });
+                    if (text) {
+                        parts.push(text);
+                        speaker = lastSpeakerFromTranscript(text);
+                    }
+                }
+                transcript = parts.filter(Boolean).join("\n\n").trim();
+            } else if (blob) {
+                transcript = await transcribeAudioBlob(blob, { onProgress });
+            }
+
+            if (transcribeJobGenRef.current !== gen) return;
+
+            if (transcript) {
+                applyTranscriptToLead(workspaceId, leadId, noteId, transcript);
+                toast.success("Appel transcrit", {
+                    description: leadLabel,
+                });
+            } else {
+                toast.message("Transcription vide", {
+                    description: "Audio sauvegardé sans texte.",
+                });
+            }
+        } catch (err) {
+            console.warn("[VoiceSession] background transcribe failed:", err);
+            if (transcribeJobGenRef.current === gen) {
+                toast.error("Transcription impossible", {
+                    description: "L'audio est quand même enregistré.",
+                });
+            }
+        } finally {
+            if (transcribeJobGenRef.current === gen) {
+                setTranscribeJob({ percent: 100, label: "Terminé", detail: leadLabel });
+                window.setTimeout(() => {
+                    if (transcribeJobGenRef.current === gen) setTranscribeJob(null);
+                }, 480);
+            }
+        }
+    }, [applyTranscriptToLead]);
+
     const save = useCallback(async ({
         transcribe = false,
         leadId: leadIdOverride,
@@ -331,7 +464,6 @@ export function VoiceSessionProvider({ children }) {
             || state.workspaces?.[workspaceId]?.leads?.[leadId]?.company
             || "Prospect";
 
-        // Fige le target avant save (appel libre → lead choisi)
         setTarget({
             workspaceId,
             leadId,
@@ -366,97 +498,32 @@ export function VoiceSessionProvider({ children }) {
             return;
         }
 
-        let noteText = "📞 Joint · Note d'appel";
-        let transcriptText = "";
-        let appointment = null;
-
-        if (transcribe && isTranscribeSupported()) {
+        // Snapshot pour transcription arrière-plan (avant reset / stop PCM)
+        const blobSnapshot = pending.blob;
+        const partials = [...partialTranscriptsRef.current];
+        let remPcm = null;
+        const pcm = pcmBufferRef.current;
+        if (pcm) {
             try {
-                setBusyLabel("Transcription…");
-                const partials = [...partialTranscriptsRef.current];
-                let transcript = "";
-
-                // Suite de la pré-transcription : ne traiter que la fin restante
-                const pcm = pcmBufferRef.current;
-                if (pcm || partials.length > 0) {
-                    let tailText = "";
-                    if (pcm) {
-                        // Attendre une pré-transcription en cours
-                        let wait = 0;
-                        while (preTranscribeBusyRef.current && wait < 120_000) {
-                            await new Promise((r) => setTimeout(r, 200));
-                            wait += 200;
-                        }
-                        const rem = await pcm.takeRemaining();
-                        try { pcm.stop(); } catch { /* */ }
-                        pcmBufferRef.current = null;
-                        if (preTranscribeTimerRef.current) {
-                            clearInterval(preTranscribeTimerRef.current);
-                            preTranscribeTimerRef.current = null;
-                        }
-                        if (rem?.length) {
-                            setBusyLabel(
-                                partials.length
-                                    ? "Fin de transcription…"
-                                    : "Transcription…"
-                            );
-                            await new Promise((r) => setTimeout(r, 40));
-                            tailText = await transcribeMono16k(rem, {
-                                onProgress: (p) => {
-                                    if (p?.message) setBusyLabel(p.message);
-                                },
-                            });
-                        }
-                    }
-                    transcript = [...partials, tailText].filter(Boolean).join("\n\n").trim();
+                let wait = 0;
+                while (preTranscribeBusyRef.current && wait < 8_000) {
+                    await new Promise((r) => setTimeout(r, 100));
+                    wait += 100;
                 }
-
-                // Fallback : blob complet (appels courts / PCM indisponible)
-                if (!transcript) {
-                    transcript = await transcribeAudioBlob(pending.blob, {
-                        onProgress: (p) => {
-                            if (p?.message) setBusyLabel(p.message);
-                        },
-                    });
-                }
-
-                partialTranscriptsRef.current = [];
-
-                if (transcript) {
-                    transcriptText = transcript;
-                    const lead = state.workspaces?.[workspaceId]?.leads?.[leadId];
-                    const ws = state.workspaces?.[workspaceId];
-                    const side = applySafeTranscriptFields(dispatch, {
-                        workspaceId,
-                        leadId,
-                        lead,
-                        text: transcript,
-                        isJobs: ws?.template === "jobs",
-                    });
-                    appointment = side?.appointment || null;
-                } else {
-                    toast.message("Transcription vide", {
-                        description: "Audio sauvegardé sans texte.",
-                    });
-                }
-            } catch (err) {
-                console.warn("[VoiceSession] transcribe failed:", err);
-                toast.error("Transcription impossible", {
-                    description: "L'audio est quand même enregistré.",
-                });
-            }
-        } else {
-            stopPcmCapture();
+                remPcm = await pcm.takeRemaining();
+            } catch { /* ignore */ }
         }
+        stopPcmCapture();
 
+        const noteId = makeNoteId();
         const now = new Date().toISOString();
         dispatch({
             type: "ADD_NOTE",
+            id: noteId,
             workspaceId,
             leadId,
-            text: noteText,
+            text: "📞 Joint · Note d'appel",
             recordingId,
-            ...(transcriptText ? { transcript: transcriptText } : {}),
         });
         dispatch({
             type: "UPDATE_LEAD",
@@ -465,24 +532,81 @@ export function VoiceSessionProvider({ children }) {
             patch: { lastContact: now },
         });
 
-        if (appointment) {
-            offerDetectedAppointment(dispatch, {
-                workspaceId,
-                leadId,
-                appointment,
-            });
-        } else if (transcribe && transcriptText) {
-            toast.success("Appel transcrit et enregistré");
-        } else {
-            toast.success("Appel enregistré");
-        }
-
+        toast.success(
+            transcribe && isTranscribeSupported()
+                ? "Appel enregistré — transcription en cours"
+                : "Appel enregistré"
+        );
         openLeadFromCalendar(dispatch, workspaceId, leadId);
 
+        // Libère le CRM immédiatement
         setSaving(false);
         setBusyLabel("");
         reset();
-    }, [pending, target, saving, dispatch, state.workspaces, reset, stopPcmCapture]);
+
+        if (transcribe && isTranscribeSupported()) {
+            void (async () => {
+                const gen = ++transcribeJobGenRef.current;
+                setTranscribeJob({
+                    percent: 1,
+                    label: "Transcription",
+                    detail: leadLabel,
+                });
+                const onProgress = (p) => {
+                    if (transcribeJobGenRef.current !== gen) return;
+                    setTranscribeJob({
+                        percent: typeof p?.progress === "number" ? p.progress : 2,
+                        label: p?.message || "Transcription",
+                        detail: leadLabel,
+                    });
+                };
+                try {
+                    let transcript = "";
+                    if (partials.length || remPcm?.length) {
+                        let tailText = "";
+                        if (remPcm?.length) {
+                            tailText = await transcribeMono16k(remPcm, {
+                                onProgress,
+                                startSpeaker: lastSpeakerFromTranscript(
+                                    partials[partials.length - 1] || ""
+                                ),
+                            });
+                        }
+                        transcript = [...partials, tailText].filter(Boolean).join("\n\n").trim();
+                    }
+                    if (!transcript && blobSnapshot) {
+                        transcript = await transcribeAudioBlob(blobSnapshot, { onProgress });
+                    }
+                    if (transcribeJobGenRef.current !== gen) return;
+                    if (transcript) {
+                        applyTranscriptToLead(workspaceId, leadId, noteId, transcript);
+                        toast.success("Appel transcrit", { description: leadLabel });
+                    } else {
+                        toast.message("Transcription vide", {
+                            description: "Audio sauvegardé sans texte.",
+                        });
+                    }
+                } catch (err) {
+                    console.warn("[VoiceSession] bg transcribe:", err);
+                    if (transcribeJobGenRef.current === gen) {
+                        toast.error("Transcription impossible", {
+                            description: "L'audio est quand même enregistré.",
+                        });
+                    }
+                } finally {
+                    if (transcribeJobGenRef.current === gen) {
+                        setTranscribeJob({ percent: 100, label: "Terminé", detail: leadLabel });
+                        window.setTimeout(() => {
+                            if (transcribeJobGenRef.current === gen) setTranscribeJob(null);
+                        }, 480);
+                    }
+                }
+            })();
+        }
+    }, [
+        pending, target, saving, dispatch, state.workspaces, reset, stopPcmCapture,
+        applyTranscriptToLead,
+    ]);
 
     // Stop → transcription + sauve auto — uniquement si un lead est déjà connu
     useEffect(() => {
@@ -551,16 +675,18 @@ export function VoiceSessionProvider({ children }) {
         saving,
         busyLabel,
         needsAttach,
+        transcribeJob,
         start,
         stop,
         discard,
         save,
         openTarget,
         isActiveFor,
+        runBackgroundTranscribe,
         formatDuration,
     }), [
         status, elapsedMs, liveStream, pending, target, saving, busyLabel, needsAttach,
-        start, stop, discard, save, openTarget, isActiveFor,
+        transcribeJob, start, stop, discard, save, openTarget, isActiveFor, runBackgroundTranscribe,
     ]);
 
     const dockOpen = status === "recording" || status === "ready";
@@ -571,6 +697,12 @@ export function VoiceSessionProvider({ children }) {
     return (
         <VoiceSessionContext.Provider value={value}>
             {children}
+            <TranscribeProgressPill
+                open={!!transcribeJob}
+                percent={transcribeJob?.percent || 0}
+                label={transcribeJob?.label || "Transcription"}
+                detail={transcribeJob?.detail || ""}
+            />
             <VoiceFloatingDock
                 open={dockOpen && !attachOpen}
                 mode={status === "ready" ? "ready" : "recording"}
